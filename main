@@ -1,0 +1,2356 @@
+import torch
+import torch.nn as nn
+import math
+import torch.nn.functional as F
+import torch.optim as optim
+from torchvision import datasets, transforms, models, utils
+from torchvision.transforms import Compose, CenterCrop, ToTensor, Resize
+from torch.utils.data import DataLoader, Dataset, random_split
+import matplotlib.pyplot as plt
+import numpy as np
+import time
+import os
+import copy
+import cv2
+import argparse
+from tqdm import tqdm
+#from tensorboardX import SummaryWriter
+import pytorch_ssim
+import pytorch_iou
+from torchvision.utils import make_grid
+import random
+#writer = SummaryWriter('.log_sum/edge_road')
+
+parser = argparse.ArgumentParser(description="Choose mode")
+parser.add_argument('-mode', type=str, default='train')
+parser.add_argument('-dim', type=int, default=64)
+parser.add_argument('-num_epochs', type=int, default=2000)
+parser.add_argument('-model_num', type=int, default=400)
+parser.add_argument('-image_scale_h', type=int, default=256)
+parser.add_argument('-image_scale_w', type=int, default=256)
+parser.add_argument('-batch', type=int, default=4)
+parser.add_argument('-img_cut', type=int, default=2)
+parser.add_argument('-lr', type=float, default=1e-4)  # 1e-4
+parser.add_argument('-lr_1', type=float, default=5e-5)  # 5e-5
+parser.add_argument('-alpha', type=float, default=0.1)
+parser.add_argument('-sa_scale', type=float, default=8)
+parser.add_argument('-latent_size', type=int, default=100)
+parser.add_argument('-data_path', type=str, default='../road/train1/img/')
+parser.add_argument('-label_path', type=str, default='../road/train1/lab/')
+parser.add_argument('-test_data_path', type=str, default='../road/valid/img/')
+parser.add_argument('-test_label_path', type=str, default='../road/valid/lab/')
+parser.add_argument('-label_path1', type=str, default='../road/train1/sobel1/')
+parser.add_argument('-test_label_path1', type=str, default='../road/valid/sobel/')
+
+# parser.add_argument('-data_path', type=str, default='../loveda/train/img/')
+# parser.add_argument('-label_path', type=str, default='../loveda/train/lab/')
+# parser.add_argument('-test_data_path', type=str, default='../loveda/test/img/')
+# parser.add_argument('-test_label_path', type=str, default='../loveda/test/lab/')
+# parser.add_argument('-label_path1', type=str, default='../loveda/train/sobel1/')
+# parser.add_argument('-test_label_path1', type=str, default='../loveda/test/sobel1/')
+
+parser.add_argument('-gpu', type=str, default='2')
+parser.add_argument('-load_model', type=str, default='True')
+opt = parser.parse_args()
+
+os.environ["CUDA_VISIBLE_DEVICES"] = opt.gpu
+use_cuda = torch.cuda.is_available()
+# print("use_cuda:", use_cuda)
+device = torch.device("cuda" if use_cuda else "cpu")
+
+IMG_CUT = opt.img_cut
+LATENT_SIZE = opt.latent_size
+
+
+def auto_create_path(FilePath):
+    if os.path.exists(FilePath):
+        print(FilePath + ' dir exists')
+    else:
+        print(FilePath + ' dir not exists')
+        os.makedirs(FilePath)
+
+
+# auto_create_path(opt.save_img_path)
+# auto_create_path(opt.test_img_path)
+# auto_create_path(opt.test_img_path_1)
+def file_filter(f):
+    if f[-4:] in ['.jpg', '.png', '.bmp']:
+        return True
+    else:
+        return False
+
+
+# B
+class steer1(nn.Module):#A
+    def __init__(self, name, input_dim1,input_dim,activate='relu'): #掩膜  细节
+        super(steer1, self).__init__()
+        self.name = name
+        self.input_dim = input_dim
+        self.activate = activate
+        self.conv1 = nn.Conv2d(in_channels=input_dim, out_channels=input_dim, kernel_size=1, stride=1, padding=0)
+        self.conv2 = nn.Conv2d(in_channels=input_dim1, out_channels=input_dim1, kernel_size=1, stride=1, padding=0)
+        self.conv3 = nn.Conv2d(in_channels=input_dim1+input_dim, out_channels=input_dim1, kernel_size=1, stride=1, padding=0)
+
+        self.conv4 = nn.Conv2d(in_channels=input_dim1 , out_channels=input_dim, kernel_size=1, stride=1,padding=0)
+
+        self.bn = nn.BatchNorm2d(input_dim)
+        self.bn1 = nn.BatchNorm2d(input_dim1)
+        self.bn2 = nn.BatchNorm2d(input_dim1)
+        if self.activate == 'relu':
+            self.nonlinear = nn.ReLU()
+        else:
+            self.nonlinear = nn.LeakyReLU()
+        self.softmax = nn.Softmax(dim=-1)
+        #self.cat=torch.cat(dim=1)
+    def forward(self, x1,y1):
+        x_1 = self.conv1(x1)
+        x_1 = self.bn(x_1)
+        x_1 = self.nonlinear(x_1)
+        y_1 = self.conv2(y1)
+        y_1 = self.bn1(y_1)
+        y_1 = self.nonlinear(y_1)
+        y_cat = self.conv3(torch.cat([x_1, y_1], dim=1))
+        y_add = self.bn2(y_cat)
+        y_add = self.nonlinear(y_add)
+
+        x_2 = self.conv4(y1)
+        x_2 = torch.sigmoid(x_2)
+        x_add = x_2 * x1
+
+        y2 = torch.cat([x1+x_add, y_add+y1], dim=1)
+        return y2
+
+class edge3(nn.Module):
+    def __init__(self, name,input_dim1, input_dim,output_dim,activate='relu'):
+        super(edge3, self).__init__()
+        self.name = name
+        self.input_dim = input_dim
+        self.activate = activate
+        self.conv2 = nn.Conv2d(in_channels=input_dim, out_channels=output_dim, kernel_size=3, stride=1, padding=1)
+        self.batchnormlize_1 = nn.BatchNorm2d(input_dim)
+        self.conv3 = nn.Conv2d(in_channels=input_dim1, out_channels=input_dim1, kernel_size=3, stride=1, padding=1)
+
+        #self.up = nn.Upsample(size=128, mode='nearest')
+        if self.activate == 'relu':
+            self.nonlinear = nn.ReLU()
+        else:
+            self.nonlinear = nn.LeakyReLU()
+        self.softmax = nn.Softmax(dim=-1)
+        #self.cat=torch.cat(dim=1)
+    def forward(self, x1,y1):
+        #y_cat = torch.cat([x1, y1], dim=1)
+        y_cat = self.conv2(y1)
+        y_cat = self.nonlinear(y_cat)
+        y_pow = y_cat.mean(dim=1).unsqueeze(1)
+        y_pow = y_pow / torch.max(y_pow)
+        # y_pow = y_cat.pow(2).sum(dim=1).unsqueeze(1)
+        # y_pow = self.softmax(y_pow)
+        x3 = torch.mul(x1, y_pow)
+        x3 = self.conv3(x3)
+        x3= self.nonlinear(x3)
+        x_res = x1+x3
+
+        return x_res,x3,y_pow
+# #1*1压缩
+# class edge4(nn.Module):
+#     def __init__(self, name, input_dim,input_dim2, activate='relu'):#浅 边
+#         super(edge4, self).__init__()
+#         self.name = name
+#         self.input_dim = input_dim
+#         self.activate = activate
+#         self.conv = nn.Conv2d(in_channels=input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+#
+#         self.conv2 = nn.Conv2d(in_channels=input_dim2, out_channels=input_dim2//2, kernel_size=3, stride=1, padding=1)
+#         self.conv2_1 = nn.Conv2d(in_channels=input_dim2//2, out_channels=1, kernel_size=1, stride=1, padding=0)
+#
+#
+#         self.conv3 = nn.Conv2d(in_channels= 2*input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+#         self.bn = nn.BatchNorm2d(input_dim)
+#         if self.activate == 'relu':
+#             self.nonlinear = nn.ReLU()
+#         else:
+#             self.nonlinear = nn.LeakyReLU()
+#         self.softmax = nn.Softmax(dim=-1)
+#         # self.cat=torch.cat(dim=1)
+#
+#     def forward(self, x, y):#浅 深 边
+#         y_cat = self.conv2(y)
+#         y_cat = self.nonlinear(y_cat)
+#         y_cat = self.conv2_1(y_cat)
+#         #y_pow = y_cat.pow(2).sum(dim=1).unsqueeze(1)
+#         y_pow = self.softmax(y_cat)
+#         #y_cat = torch.sigmoid(y_cat)
+#         # y_pow = y_cat.mean(dim=1).unsqueeze(1)
+#         # y_pow = y_pow / torch.max(y_pow)
+#         x3 = torch.mul(x, y_pow)
+#         x_result = torch.cat([x3, x], dim=1)
+#         x_result = self.conv3(x_result)
+#         x_result = self.bn(x_result)
+#         x_result = self.nonlinear(x_result)
+#         return x_result,y_pow,x3
+# #1*1压缩
+# class edge5(nn.Module):
+#     def __init__(self, name, input_dim, input_dim1,input_dim2, activate='relu'):#浅 深 边 输出
+#         super(edge5, self).__init__()
+#         self.name = name
+#         self.input_dim = input_dim
+#         self.activate = activate
+#         self.conv = nn.Conv2d(in_channels=input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+#
+#         self.conv2 = nn.Conv2d(in_channels=input_dim2, out_channels=input_dim2//2, kernel_size=3, stride=1, padding=1)
+#         self.conv2_1 = nn.Conv2d(in_channels=input_dim2 // 2, out_channels=1, kernel_size=1, stride=1, padding=0)
+#
+#
+#         self.conv3 = nn.Conv2d(in_channels= 2*(input_dim1+input_dim), out_channels=input_dim1+input_dim, kernel_size=3, stride=1, padding=1)
+#         self.bn = nn.BatchNorm2d(input_dim1+input_dim)
+#         if self.activate == 'relu':
+#             self.nonlinear = nn.ReLU()
+#         else:
+#             self.nonlinear = nn.LeakyReLU()
+#         self.softmax = nn.Softmax(dim=-1)
+#         # self.cat=torch.cat(dim=1)
+#
+#     def forward(self, x,x1, y1):#浅 深 边
+#         x_add = self.conv(x)
+#         x_sum = torch.cat([x_add, x1], dim=1)
+#         y_cat = self.conv2(y1)
+#         y_cat = self.nonlinear(y_cat)
+#         y_cat = self.conv2_1(y_cat)
+#         #y_pow = y_cat.pow(2).sum(dim=1).unsqueeze(1)
+#         y_pow = self.softmax(y_cat)
+#         #y_cat = torch.sigmoid(y_cat)
+#         # y_pow = y_cat.mean(dim=1).unsqueeze(1)
+#         # y_pow = y_pow / torch.max(y_pow)
+#         x3 = torch.mul(x_sum, y_pow)
+#         x_result = torch.cat([x3, x_sum], dim=1)
+#         x_result = self.conv3(x_result)
+#         x_result = self.bn(x_result)
+#         x_result = self.nonlinear(x_result)
+#         return x_result,y_pow,x3
+#直接相加 也可以不在乎
+class edge1(nn.Module):
+    def __init__(self, name, input_dim,output_dim,activate='relu'):
+        super(edge1, self).__init__()
+        self.name = name
+        self.input_dim = input_dim
+        self.activate = activate
+        self.conv2 = nn.Conv2d(in_channels=input_dim, out_channels=output_dim, kernel_size=3, stride=1, padding=1)
+        self.batchnormlize = nn.BatchNorm2d(output_dim)
+        if self.activate == 'relu':
+            self.nonlinear = nn.ReLU()
+        else:
+            self.nonlinear = nn.LeakyReLU()
+        self.softmax = nn.Softmax(dim=-1)
+        #self.cat=torch.cat(dim=1)
+    def forward(self, x1,y1):
+        #y_cat = torch.cat([x1, y1], dim=1)
+        y_cat = self.conv2(y1)
+        y_cat = self.batchnormlize(y_cat)
+        y_cat= self.nonlinear(y_cat)
+        y2 = x1+y_cat
+        return y2,y_cat
+
+# class edge4_1(nn.Module):
+#     def __init__(self, name, input_dim,input_dim2, activate='relu'):#浅 边
+#         super(edge4_1, self).__init__()
+#         self.name = name
+#         self.input_dim = input_dim
+#         self.activate = activate
+#         self.conv = nn.Conv2d(in_channels=input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+#         self.conv2 = nn.Conv2d(in_channels=input_dim2, out_channels=input_dim2//2, kernel_size=3, stride=1, padding=1)
+#
+#         self.conv3 = nn.Conv2d(in_channels= 2*input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+#         self.bn = nn.BatchNorm2d(input_dim)
+#         if self.activate == 'relu':
+#             self.nonlinear = nn.ReLU()
+#         else:
+#             self.nonlinear = nn.LeakyReLU()
+#         self.softmax = nn.Softmax(dim=-1)
+#         # self.cat=torch.cat(dim=1)
+#
+#     def forward(self, x, y):#浅 深 边
+#         y_cat = self.conv2(y)
+#         y_pow = y_cat.pow(2).sum(dim=1).unsqueeze(1)
+#         y_pow = self.softmax(y_pow)
+#         #y_cat = torch.sigmoid(y_cat)
+#         # y_pow = y_cat.mean(dim=1).unsqueeze(1)
+#         # y_pow = y_pow / torch.max(y_pow)
+#         x3 = torch.mul(x, y_pow)
+#         x_result = torch.cat([x3, x], dim=1)
+#         x_result = self.conv3(x_result)
+#         x_result = self.bn(x_result)
+#         x_result = self.nonlinear(x_result)
+#         return x_result,y_pow,x3
+#
+# class edge5_1(nn.Module):
+#     def __init__(self, name, input_dim, input_dim1,input_dim2, activate='relu'):#浅 深 边 输出
+#         super(edge5_1, self).__init__()
+#         self.name = name
+#         self.input_dim = input_dim
+#         self.activate = activate
+#         self.conv = nn.Conv2d(in_channels=input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+#         self.conv2 = nn.Conv2d(in_channels=input_dim2, out_channels=input_dim2//2, kernel_size=3, stride=1, padding=1)
+#
+#         self.conv3 = nn.Conv2d(in_channels= 2*(input_dim1+input_dim), out_channels=input_dim1+input_dim, kernel_size=3, stride=1, padding=1)
+#         self.bn = nn.BatchNorm2d(input_dim1 + input_dim)
+#         if self.activate == 'relu':
+#             self.nonlinear = nn.ReLU()
+#         else:
+#             self.nonlinear = nn.LeakyReLU()
+#         self.softmax = nn.Softmax(dim=-1)
+#         # self.cat=torch.cat(dim=1)
+#
+#     def forward(self, x,x1, y1):#浅 深 边
+#         x_add = self.conv(x)
+#         x_sum = torch.cat([x_add, x1], dim=1)
+#         y_cat = self.conv2(y1)
+#         y_pow = y_cat.pow(2).sum(dim=1).unsqueeze(1)
+#         y_pow = self.softmax(y_pow)
+#         # y_cat = torch.sigmoid(y_cat)
+#         # y_pow = y_cat.mean(dim=1).unsqueeze(1)
+#         # y_pow = y_pow / torch.max(y_pow)
+#         x3 = torch.mul(x_sum, y_pow)
+#         x_result = torch.cat([x3, x_sum], dim=1)
+#         x_result = self.conv3(x_result)
+#         x_result = self.bn(x_result)
+#         x_result = self.nonlinear(x_result)
+#         return x_result,y_pow,x3
+# class edge4(nn.Module):
+#     def __init__(self, name, input_dim,input_dim2, activate='relu'):#浅 边
+#         super(edge4, self).__init__()
+#         self.name = name
+#         self.input_dim = input_dim
+#         self.activate = activate
+#         self.conv = nn.Conv2d(in_channels=input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+#         self.conv2 = nn.Conv2d(in_channels=input_dim2, out_channels=input_dim2//2, kernel_size=3, stride=1, padding=1)
+#
+#         self.conv3 = nn.Conv2d(in_channels= input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+#         self.bn = nn.BatchNorm2d(input_dim)
+#         if self.activate == 'relu':
+#             self.nonlinear = nn.ReLU()
+#         else:
+#             self.nonlinear = nn.LeakyReLU()
+#         self.softmax = nn.Softmax(dim=-1)
+#         # self.cat=torch.cat(dim=1)
+#
+#     def forward(self, x, y):#浅 深 边
+#         y_cat = self.conv2(y)
+#         # y_pow = y_cat.pow(2).sum(dim=1).unsqueeze(1)
+#         # y_pow = self.softmax(y_pow)
+#         y_cat = torch.sigmoid(y_cat)
+#         y_pow = y_cat.mean(dim=1).unsqueeze(1)
+#         y_pow = y_pow / torch.max(y_pow)
+#         x3 = torch.mul(x, y_pow)
+#
+#         x_result = self.conv3(x3)
+#         x_result = self.bn(x_result)
+#         x_result = self.nonlinear(x_result)
+#         x_result = x_result + x
+#         return x_result,y_pow,x3
+class edge4_1(nn.Module):
+    def __init__(self, name, input_dim1,input_dim, activate='relu'):#边 主
+        super(edge4_1, self).__init__()
+        self.name = name
+        self.input_dim = input_dim
+        self.activate = activate
+        self.conv2 = nn.Conv2d(in_channels=input_dim1, out_channels=input_dim1//2, kernel_size=3, stride=1, padding=1)
+
+        self.conv3 = nn.Conv2d(in_channels= 2*input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+        self.bn = nn.BatchNorm2d(input_dim)
+        if self.activate == 'relu':
+            self.nonlinear = nn.ReLU()
+        else:
+            self.nonlinear = nn.LeakyReLU()
+        self.softmax = nn.Softmax(dim=-1)
+        # self.cat=torch.cat(dim=1)
+
+    def forward(self, x, y):#浅 深 边
+        y_cat = self.conv2(y)
+        # y_pow = y_cat.pow(2).sum(dim=1).unsqueeze(1)
+        # y_pow = self.softmax(y_pow)
+        y_cat = torch.sigmoid(y_cat)
+        y_pow = y_cat.mean(dim=1).unsqueeze(1)
+        y_pow = y_pow / torch.max(y_pow)
+        x3 = torch.mul(x, y_pow)
+        x_result = torch.cat([x, x3], dim=1)
+        x_result = self.conv3(x_result)
+        x_result = self.bn(x_result)
+        x_result = self.nonlinear(x_result)
+        #x_result = x_result + x
+        return x_result
+
+class edge5_3(nn.Module):
+    def __init__(self, name, input_dim2, input_dim1, input_dim, activate='relu'):  # 边 深 浅
+        super(edge5_3, self).__init__()
+        self.name = name
+        self.input_dim = input_dim
+        self.activate = activate
+        # self.conv = nn.Conv2d(in_channels=input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_1 = nn.Conv2d(in_channels=input_dim1, out_channels=input_dim1, kernel_size=3, stride=1, padding=1)
+        self.conv_2 = nn.Conv2d(in_channels=input_dim1 + input_dim, out_channels=input_dim1 + input_dim, kernel_size=3,
+                                stride=1, padding=1)
+
+        # self.conv1 = nn.Conv2d(in_channels=input_dim1+input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(in_channels=input_dim2, out_channels=input_dim2 // 2, kernel_size=3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(in_channels=2 * input_dim1 + input_dim, out_channels=input_dim1 + input_dim,
+                               kernel_size=3, stride=1, padding=1)
+        self.bn_0 = nn.BatchNorm2d(input_dim1 + input_dim)
+        self.bn = nn.BatchNorm2d(input_dim1 + input_dim)
+        if self.activate == 'relu':
+            self.nonlinear = nn.ReLU()
+        else:
+            self.nonlinear = nn.LeakyReLU()
+        self.softmax = nn.Softmax(dim=-1)
+        # self.cat=torch.cat(dim=1)
+
+    def forward(self, x1, y1, x):  # 深 边浅
+
+        x_sum = torch.cat([x, x1], dim=1)
+        x_sum = self.conv_2(x_sum)
+        x_sum = self.bn_0(x_sum)
+        x_sum = self.nonlinear(x_sum)
+
+        y_cat = self.conv2(y1)
+
+        y_pow = y_cat.pow(2).sum(dim=1).unsqueeze(1)
+        y_pow = self.softmax(y_pow)
+        # y_cat = torch.sigmoid(y_cat)
+        # y_pow = y_cat.mean(dim=1).unsqueeze(1)
+        # y_pow = y_pow / torch.max(y_pow)
+        x3 = torch.mul(x_sum, y_pow)
+        # x3 = self.conv1(x3)
+
+        x_result = torch.cat([x3, x1], dim=1)
+        x_result = self.conv3(x_result)
+        x_result = self.bn(x_result)
+        x_result = self.nonlinear(x_result)
+        return x_result
+
+class edge5(nn.Module):
+    def __init__(self, name, input_dim, input_dim1,input_dim2, activate='relu'):#浅 深 边 输出
+        super(edge5, self).__init__()
+        self.name = name
+        self.input_dim = input_dim
+        self.activate = activate
+        self.conv = nn.Conv2d(in_channels=input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(in_channels=input_dim2, out_channels=input_dim2//2, kernel_size=3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(in_channels= 2*(input_dim1+input_dim), out_channels=input_dim1+input_dim, kernel_size=3, stride=1, padding=1)
+        self.bn = nn.BatchNorm2d(input_dim1 + input_dim)
+        if self.activate == 'relu':
+            self.nonlinear = nn.ReLU()
+        else:
+            self.nonlinear = nn.LeakyReLU()
+        self.softmax = nn.Softmax(dim=-1)
+        # self.cat=torch.cat(dim=1)
+
+    def forward(self, x,x1, y1):#浅 深 边
+        x_add = self.conv(x)
+        x_sum = torch.cat([x_add, x1], dim=1)
+        y_cat = self.conv2(y1)
+        y_pow = y_cat.pow(2).sum(dim=1).unsqueeze(1)
+        y_pow = self.softmax(y_pow)
+        #y_cat = torch.sigmoid(y_cat)
+        # y_pow = y_cat.mean(dim=1).unsqueeze(1)
+        # y_pow = y_pow / torch.max(y_pow)
+        x3 = torch.mul(x_sum, y_pow)
+        x_result = torch.cat([x3, x_sum], dim=1)
+        x_result = self.conv3(x_result)
+        x_result = self.bn(x_result)
+        x_result = self.nonlinear(x_result)
+        return x_result,y_pow,x3
+# class edge5(nn.Module):
+#     def __init__(self, name, input_dim, input_dim1,input_dim2, activate='relu'):#浅 深 边 输出
+#         super(edge5, self).__init__()
+#         self.name = name
+#         self.input_dim = input_dim
+#         self.activate = activate
+#         self.conv = nn.Conv2d(in_channels=input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+#         self.conv2 = nn.Conv2d(in_channels=input_dim2, out_channels=input_dim2//2, kernel_size=3, stride=1, padding=1)
+#         self.conv3 = nn.Conv2d(in_channels= 2*(input_dim1+input_dim), out_channels=input_dim1+input_dim, kernel_size=3, stride=1, padding=1)
+#         self.bn = nn.BatchNorm2d(input_dim1 + input_dim)
+#         if self.activate == 'relu':
+#             self.nonlinear = nn.ReLU()
+#         else:
+#             self.nonlinear = nn.LeakyReLU()
+#         self.softmax = nn.Softmax(dim=-1)
+#         # self.cat=torch.cat(dim=1)
+#
+#     def forward(self, x,x1, y1):#浅 深 边
+#         x_add = self.conv(x)
+#         x_sum = torch.cat([x_add, x1], dim=1)
+#         y_cat = self.conv2(y1)
+#         y_pow = y_cat.pow(2).sum(dim=1).unsqueeze(1)
+#         y_pow = self.softmax(y_pow)
+#         #y_cat = torch.sigmoid(y_cat)
+#         # y_pow = y_cat.mean(dim=1).unsqueeze(1)
+#         # y_pow = y_pow / torch.max(y_pow)
+#         x3 = torch.mul(x_sum, y_pow)
+#         x_result = torch.cat([x3, x_sum], dim=1)
+#         x_result = self.conv3(x_result)
+#         x_result = self.bn(x_result)
+#         x_result = self.nonlinear(x_result)
+#         return x_result,y_pow,x3
+
+# class edge4(nn.Module):
+#     def __init__(self, name, input_dim, input_dim2, activate='relu'):  # 浅 边
+#         super(edge4, self).__init__()
+#         self.name = name
+#         self.input_dim = input_dim
+#         self.activate = activate
+#         self.conv = nn.Conv2d(in_channels=input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+#         self.conv2 = nn.Conv2d(in_channels=input_dim2, out_channels=input_dim2 // 2, kernel_size=3, stride=1, padding=1)
+#
+#         self.conv3 = nn.Conv2d(in_channels=input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+#         self.bn = nn.BatchNorm2d(input_dim)
+#         if self.activate == 'relu':
+#             self.nonlinear = nn.ReLU()
+#         else:
+#             self.nonlinear = nn.LeakyReLU()
+#         self.softmax = nn.Softmax(dim=-1)
+#         # self.cat=torch.cat(dim=1)
+#
+#     def forward(self, x, y):  # 浅 深 边
+#         y_cat = self.conv2(y)
+#         # y_pow = y_cat.pow(2).sum(dim=1).unsqueeze(1)
+#         # y_pow = self.softmax(y_pow)
+#         y_cat = torch.sigmoid(y_cat)
+#         y_pow = y_cat.mean(dim=1).unsqueeze(1)
+#         y_pow = y_pow / torch.max(y_pow)
+#         x3 = torch.mul(x, y_pow)
+#
+#         x_result = self.conv3(x3)
+#         x_result = self.bn(x_result)
+#         x_result = self.nonlinear(x_result)
+#         x_result = x_result + x
+#         return x_result, y_pow, x3
+
+# class edge5_1(nn.Module):
+#     def __init__(self, name, input_dim, input_dim1,input_dim2, activate='relu'):#浅 深 边 输出
+#         super(edge5_1, self).__init__()
+#         self.name = name
+#         self.input_dim = input_dim
+#         self.activate = activate
+#         self.conv = nn.Conv2d(in_channels=input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+#         self.conv2 = nn.Conv2d(in_channels=input_dim2, out_channels=input_dim2//2, kernel_size=3, stride=1, padding=1)
+#         self.conv3 = nn.Conv2d(in_channels= 2*(input_dim1+input_dim), out_channels=input_dim1+input_dim, kernel_size=3, stride=1, padding=1)
+#         self.bn = nn.BatchNorm2d(input_dim1 + input_dim)
+#         if self.activate == 'relu':
+#             self.nonlinear = nn.ReLU()
+#         else:
+#             self.nonlinear = nn.LeakyReLU()
+#         self.softmax = nn.Softmax(dim=-1)
+#         # self.cat=torch.cat(dim=1)
+#
+#     def forward(self, x,x1, y1):#浅 深 边
+#         x_add = self.conv(x)
+#         x_sum = torch.cat([x_add, x1], dim=1)
+#         y_cat = self.conv2(y1)
+#         # y_pow = y_cat.pow(2).sum(dim=1).unsqueeze(1)
+#         # y_pow = self.softmax(y_pow)
+#         y_cat = torch.sigmoid(y_cat)
+#         y_pow = y_cat.mean(dim=1).unsqueeze(1)
+#         y_pow = y_pow / torch.max(y_pow)
+#         x3 = torch.mul(x_sum, y_pow)
+#         x_result = torch.cat([x3, x_sum], dim=1)
+#         x_result = self.conv3(x_result)
+#         x_result = self.bn(x_result)
+#         x_result = self.nonlinear(x_result)
+#         return x_result,y_pow,x3
+class edge5_1(nn.Module):
+    def __init__(self, name, input_dim, input_dim1, input_dim2, activate='relu'):  # 浅 深 边 输出
+        super(edge5_1, self).__init__()
+        self.name = name
+        self.input_dim = input_dim
+        self.activate = activate
+        self.conv = nn.Conv2d(in_channels=input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(in_channels=input_dim2, out_channels=input_dim2 // 2, kernel_size=3, stride=1, padding=1)
+        self.conv3 = nn.Conv2d(in_channels=input_dim1 + input_dim, out_channels=input_dim1 + input_dim,
+                               kernel_size=3, stride=1, padding=1)
+        self.bn = nn.BatchNorm2d(input_dim1 + input_dim)
+        if self.activate == 'relu':
+            self.nonlinear = nn.ReLU()
+        else:
+            self.nonlinear = nn.LeakyReLU()
+        self.softmax = nn.Softmax(dim=-1)
+        # self.cat=torch.cat(dim=1)
+
+    def forward(self, x, x1, y1):  # 浅 深 边
+        x_add = self.conv(x)
+        x_sum = torch.cat([x_add, x1], dim=1)
+
+        y_cat = self.conv2(y1)
+        # y_pow = y_cat.pow(2).sum(dim=1).unsqueeze(1)
+        # y_pow = self.softmax(y_pow)
+        y_cat = torch.sigmoid(y_cat)
+        y_pow = y_cat.mean(dim=1).unsqueeze(1)
+        y_pow = y_pow / torch.max(y_pow)
+        x3 = torch.mul(x_sum, y_pow)
+        x_result = self.conv3(x3)
+        x_result = self.bn(x_result)
+        x_result = self.nonlinear(x_result)
+        x_result = x_result + x_sum
+        return x_result, y_pow, x3
+
+class ResidualBlockDown(nn.Module):
+    def __init__(self, name, input_dim, output_dim, activate='relu'):
+        super(ResidualBlockDown, self).__init__()
+        self.name = name
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.batchnormlize_1 = nn.BatchNorm2d(input_dim)
+        self.activate = activate
+        self.conv_0 = nn.Conv2d(in_channels=input_dim, out_channels=output_dim, kernel_size=3, stride=1, padding=1)
+        self.conv_shortcut = nn.AvgPool2d(3, stride=2, padding=1)
+        self.conv_1 = nn.Conv2d(in_channels=input_dim, out_channels=input_dim, kernel_size=3, stride=2, padding=1)
+        self.conv_2 = nn.Conv2d(in_channels=input_dim, out_channels=output_dim, kernel_size=3, stride=1, padding=1)
+        self.batchnormlize_2 = nn.BatchNorm2d(output_dim)
+        self.batchnormlize_3 = nn.BatchNorm2d(output_dim)
+        if self.activate == 'relu':
+            self.nonlinear = nn.ReLU()
+        else:
+            self.nonlinear = nn.LeakyReLU()
+
+    def forward(self, inputs):
+
+        x1 = self.conv_shortcut(inputs)
+        shortcut = self.conv_0(x1)
+        shortcut = self.batchnormlize_3(shortcut)
+
+
+        x = self.conv_1(inputs)
+        x = self.batchnormlize_1(x)
+        x = self.nonlinear(x)
+        x = self.conv_2(x)
+        x = self.batchnormlize_2(x)
+        x = shortcut + x
+        x = self.nonlinear(x)
+
+        return x
+
+class ResidualBlockUp(nn.Module):
+    def __init__(self, name, input_dim, output_dim, activate='relu'):
+        super(ResidualBlockUp, self).__init__()
+        self.name = name
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.batchnormlize_1 = nn.BatchNorm2d(input_dim)
+        self.activate = activate
+
+        self.up1 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.conv_0 = nn.Conv2d(in_channels=input_dim, out_channels=output_dim, kernel_size=3, stride=1, padding=1)
+        self.up2 = nn.Upsample(scale_factor=2, mode='nearest')
+        #self.conv_0 =nn.ConvTranspose2d(in_channels=input_dim,out_channels=output_dim,kernel_size=3,stride=2,padding=1,output_padding=1)
+        self.conv_1 = nn.Conv2d(in_channels=input_dim , out_channels=input_dim , kernel_size=3, stride=1,padding=1)
+
+        self.up2 = nn.Upsample(scale_factor=2, mode='nearest')
+        self.conv_2 = nn.Conv2d(in_channels=input_dim , out_channels=output_dim , kernel_size=3, stride=1,padding=1)
+
+        #self.conv_2 = nn.ConvTranspose2d(in_channels=input_dim*2,out_channels=output_dim,kernel_size=3,stride=2,padding=1,output_padding=1)
+        self.batchnormlize_2 = nn.BatchNorm2d(output_dim)
+        self.batchnormlize_3 = nn.BatchNorm2d(output_dim)
+        if self.activate == 'relu':
+            self.nonlinear = nn.ReLU()
+        else:
+            self.nonlinear = nn.LeakyReLU()
+
+    def forward(self, inputs):
+        x1 = self.up1(inputs)
+
+        shortcut = self.conv_0(x1)
+        shortcut = self.batchnormlize_3(shortcut)
+
+        x = self.conv_1(x1)
+        x = self.batchnormlize_1(x)
+        x = self.nonlinear(x)
+
+        x = self.conv_2(x)
+        x = self.batchnormlize_2(x)
+        x = shortcut + x
+        x = self.nonlinear(x)
+
+        return x
+
+class ResidualBlock(nn.Module):
+    def __init__(self, name, input_dim, output_dim, activate='relu'):
+        super(ResidualBlock, self).__init__()
+        self.name = name
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.batchnormlize_1 = nn.BatchNorm2d(input_dim)
+        self.activate = activate
+
+        self.conv_shortcut = nn.Conv2d(in_channels=input_dim, out_channels=output_dim, kernel_size=3, stride=1,
+                                       padding=1)
+        self.conv_1 = nn.Conv2d(in_channels=input_dim, out_channels=input_dim, kernel_size=3, stride=1, padding=1)
+        self.conv_2 = nn.Conv2d(in_channels=input_dim, out_channels=output_dim, kernel_size=3, stride=1, padding=1)
+        self.batchnormlize_2 = nn.BatchNorm2d(output_dim)
+        self.batchnormlize_3 = nn.BatchNorm2d(output_dim)
+        if self.activate == 'relu':
+            self.nonlinear = nn.ReLU()
+        else:
+            self.nonlinear = nn.LeakyReLU()
+
+    def forward(self, inputs):
+
+        shortcut = self.conv_shortcut(inputs)
+        shortcut = self.batchnormlize_3(shortcut)
+
+        x = self.conv_1(inputs)
+        x = self.batchnormlize_1(x)
+        x = self.nonlinear(x)
+        x = self.conv_2(x)
+        x = self.batchnormlize_2(x)
+        x = shortcut + x
+        x = self.nonlinear(x)
+
+        return x
+
+#非对称卷积模块
+class non_symmetricBlock(nn.Module):
+    def __init__(self, name, input_dim, output_dim,output_dim1, activate='relu',down = "False"):
+        super(non_symmetricBlock, self).__init__()
+        self.name = name
+        self.input_dim = input_dim
+        self.output_dim = output_dim
+        self.activate = activate
+        if down == "ture":
+            self.stride = 2
+        else:
+            self.stride = 1
+        self.conv = nn.Conv2d(in_channels=input_dim, out_channels=input_dim, kernel_size=3, stride=self.stride, padding=1)
+        self.bn = nn.BatchNorm2d(input_dim)
+
+        self.conv_1_1 = nn.Conv2d(in_channels=input_dim, out_channels=output_dim, kernel_size=[1, 7], stride=1, padding=[0, 3])
+        self.bn_1_1 = nn.BatchNorm2d(output_dim)
+        self.conv_1_2 = nn.Conv2d(in_channels=output_dim, out_channels=output_dim1, kernel_size=[7, 1], stride=1, padding=[3, 0])
+        self.bn_1_2 = nn.BatchNorm2d(output_dim1)
+
+        self.conv_2_1 = nn.Conv2d(in_channels=input_dim, out_channels=output_dim, kernel_size=[7, 1], stride=1, padding=[3, 0])
+        self.bn_2_1= nn.BatchNorm2d(output_dim)
+        self.conv_2_2 = nn.Conv2d(in_channels=output_dim, out_channels=output_dim1, kernel_size=[1, 7], stride=1, padding=[0, 3])
+        self.bn_2_2 = nn.BatchNorm2d(output_dim1)
+
+        if self.activate == 'relu':
+                self.nonlinear = nn.ReLU()
+        else:
+            self.nonlinear = nn.LeakyReLU()
+
+    def forward(self, inputs):
+        inputs = self.conv(inputs)
+        inputs = self.bn(inputs)
+        inputs = self.nonlinear(inputs)
+
+        x1 = self.conv_1_1(inputs)
+        x1 = self.bn_1_1(x1)
+        x1 = self.nonlinear(x1)
+        x1 = self.conv_1_2(x1)
+        x1 = self.bn_1_2(x1)
+        x1 = self.nonlinear(x1)
+
+        x2 = self.conv_2_1(inputs)
+        x2 = self.bn_2_1(x2)
+        x2 = self.nonlinear(x2)
+        x2 = self.conv_2_2(x2)
+        x2 = self.bn_2_2(x2)
+        x2 = self.nonlinear(x2)
+
+        x = inputs+x1+x2
+        return x
+
+
+class Unet_liu_e_2(nn.Module):
+    def __init__(self, dim=opt.dim, activate='relu'):
+        super(Unet_liu_e_2, self).__init__()
+        self.dim = dim
+        self.activate = activate
+        self.conv_1 = nn.Conv2d(in_channels=3, out_channels=dim, kernel_size=3, stride=1, padding=1)
+        self.bn1 = nn.BatchNorm2d(1 * dim)
+        # 256x256
+        self.residual_block_down_1 = ResidualBlockDown('1', 1 * dim, 2 * dim, activate='leaky_relu')
+        self.residual_block_down_2 = ResidualBlockDown('2', 2 * dim, 2 * dim, activate='leaky_relu')
+
+        # 128x128
+        # --------------------------边缘----------------------------
+        # self.residual_block_2_down_2 = non_symmetricBlock('Res0', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
+        #                                                   down="ture")
+        # self.residual_block_3_down_2 = non_symmetricBlock('Res1', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
+        #                                                   down="ture")
+        #self.residual_block_2_down_2 = ResidualBlockDown('Res2', 2 * dim, 2 * dim, activate='leaky_relu')
+        self.residual_block_3_down_2 = ResidualBlockDown('Res2', 2 * dim, 2 * dim, activate='leaky_relu')
+
+        self.residual_block_4_down_2 = ResidualBlockDown('Res2', 2 * dim, 4 * dim, activate='leaky_relu')
+
+        self.residual_block_4_none_2 = ResidualBlock('non2', 4 * dim, 6 * dim, activate='leaky_relu')
+        self.residual_block_1_up_2 = ResidualBlockUp('Res3', 6 * dim, 6 * dim, activate='leaky_relu')
+        self.residual_block_2_up_2 = ResidualBlockUp('Res4', 6* dim, 4 * dim, activate='leaky_relu')
+        self.residual_block_2_up_3 = ResidualBlockUp('Res5', 4 * dim, 2 * dim, activate='leaky_relu')
+        self.residual_block_2_up_4 = ResidualBlockUp('Res6', 2 * dim, 1 * dim, activate='leaky_relu')
+
+        # self.conv4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=2, padding=1)
+
+        self.conv8 = nn.Conv2d(in_channels=dim, out_channels=1, kernel_size=3, stride=1, padding=1)
+        # -------------------------------------------------------------------------------------------------------------
+
+        self.residual_block_down_3 = ResidualBlockDown('3', 2 * dim, 4 * dim, activate='leaky_relu')
+        self.edge_0 = edge3('edge_0',4 * dim,2 * dim, 1* dim)    # 边缘特征的输入输出
+        self.residual_block_none_3 = ResidualBlock('4',  4* dim, 4 * dim, activate='leaky_relu')
+        # 32x32
+        self.residual_block_down_4 = ResidualBlockDown('5', 4 * dim, 8 * dim, activate='leaky_relu')
+        self.edge_1 = edge3('edge_1', 8 * dim, 4 * dim, 2 * dim) # 主路特征，边缘特征的输入输出
+        self.residual_block_none_4 = ResidualBlock('6', 8 * dim, 8 * dim, activate='leaky_relu')
+        # 16x16
+        self.residual_block_1_none_1 = ResidualBlock('7', 8 * dim, 8 * dim, activate='leaky_relu')
+        self.residual_block_1_none_2 = ResidualBlock('8', 8 * dim, 8 * dim, activate='leaky_relu')
+        self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+        # self.steer_1 = steer('steer1', input_dim=8 * dim, output_dim=16 * dim)
+        self.residual_block_1_none_3 = ResidualBlock('9', 16 * dim, 8 * dim, activate='leaky_relu')
+        self.edge_2 = edge3('edge_2', 8 * dim,6 * dim, 4 * dim)  # 主路特征，边缘特征的输入输出
+
+        # 16x16
+        self.residual_block_up_1 = ResidualBlockUp('10', 8 * dim, 8 * dim, activate='leaky_relu')
+        self.conv_4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+        # self.steer_2 = steer('steer2', input_dim=4 * dim, output_dim=12 * dim)# 浅 concat
+        self.residual_block_none1 = ResidualBlock('11', 12* dim, 6 * dim, activate='leaky_relu')
+        self.edge = edge3('edge', 6 * dim, 6 * dim, 2 * dim)  # 边缘的输入输出
+
+        # 32x32
+        self.residual_block_up_2 = ResidualBlockUp('12', 6 * dim, 6 * dim, activate='leaky_relu')
+        self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.steer_3 = steer('steer3', input_dim=2 * dim, output_dim=8 * dim)# 浅 concat
+        self.residual_block_none2 = ResidualBlock('13', 8 * dim, 4 * dim, activate='leaky_relu')
+        self.edge1 = edge3('edge1', 4 * dim, 4 * dim,2 * dim)  # 边缘的输入输出
+
+        # 64x64
+        self.residual_block_up_3 = ResidualBlockUp('14', 4 * dim, 4 * dim, activate='leaky_relu')
+        self.conv_6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+       # self.steer_4 = steer('steer4', input_dim=2 * dim, output_dim=6 * dim)# 浅 concat
+        self.residual_block_none3 = ResidualBlock('15',6 * dim, 2 * dim, activate='leaky_relu')
+        self.edge2 = edge3('edge2', 2 * dim, 2 * dim,  dim)  # 边缘的输入输出
+
+        # 128x128
+        self.residual_block_up_4 = ResidualBlockUp('16', 2 * dim, 2 * dim, activate='leaky_relu')  # 4 2
+        self.conv_7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
+        # self.steer_5 = steer('steer5', input_dim=1 * dim, output_dim=3 * dim)# 浅 concat
+        self.residual_block_none4 = ResidualBlock('17', 3 * dim, 1 * dim, activate='leaky_relu')  # 2 1
+        self.edge3 = edge3('edge3', 1 * dim, dim, dim)  # 边缘的输入输出
+        # 256x256
+        # self.residual_block_none5 = ResidualBlock('18', 2* dim, 1 * dim, activate='leaky_relu')
+        self.residual_block_none5 = ResidualBlock('18', 1 * dim, 1 * dim, activate='leaky_relu')  # 1 1
+        # self.residual_block_none6 =  ResidualBlock('19', 2 * dim, 1 * dim, activate='leaky_relu')
+
+        self.conv_2 = nn.Conv2d(in_channels=1 * dim, out_channels=1, kernel_size=3, stride=1, padding=1)
+        # self.pooing = StripPooling(4 * dim, [32, 16], "nearest")
+
+        # self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_6 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_7 = nn.Conv2d(in_channels=12 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+        self.leaky_relu = nn.LeakyReLU()
+        # self.PSP = PSPModule(features=1 * dim, out_features=1 * dim)
+        if self.activate == 'relu':
+            self.nonlinear = nn.ReLU()
+        else:
+            self.nonlinear = nn.LeakyReLU()
+
+    def forward(self, x):
+        x1 = self.conv_1(x)
+        # torch.Size([4, 1, 256
+        x1 = self.bn1(x1)
+        x1 = self.leaky_relu(x1)
+        x2 = self.residual_block_down_1(x1)
+        x3 = self.residual_block_down_2(x2)
+
+        # --------------------边缘-------------------------------------
+        #dege0 = self.residual_block_2_down_2(x2)
+        dege1 = self.residual_block_3_down_2(x3)  # 2
+        dege2 = self.residual_block_4_down_2(dege1)
+        # 4
+        dege3 = self.residual_block_4_none_2(dege2)
+        # dege_2 = self.conv4(dege2)
+        # dege3_1 = torch.cat([dege3, dege_2], dim=1)
+
+        dege4 = self.residual_block_1_up_2(dege3)  # 4
+        # dege_1 = self.conv5(dege1)
+        # dege4_1 = torch.cat([dege4, dege_1], dim=1)
+
+        dege5 = self.residual_block_2_up_2(dege4)  # 4
+        # dege_0 = self.conv6(dege0)
+        # dege5_1 = torch.cat([dege5, dege_0], dim=1)
+
+        dege6 = self.residual_block_2_up_3(dege5)  # 2
+        # x_1 = self.conv7(x1)
+        # dege6_1 = torch.cat([dege6, x_1], dim=1)
+
+        dege7 = self.residual_block_2_up_4(dege6)  # 1
+
+        x_3 = self.conv8(dege7)
+        x_edge = torch.sigmoid(x_3)
+        # ---------------------------------------------------------
+
+        x4 = self.residual_block_down_3(x3)  # 2
+        x4, _,_ = self.edge_0(x4, dege1)  # 4
+        x4 = self.residual_block_none_3(x4)  # 2
+
+        x5 = self.residual_block_down_4(x4)  # 4
+        x5, _,_  = self.edge_1(x5, dege2)  # 8
+        x5 = self.residual_block_none_4(x5)  # 4
+
+        x6 = self.residual_block_1_none_1(x5)  # 8
+        x7 = self.residual_block_1_none_2(x6)
+        x5 = self.conv_3(x5)
+        x7 = torch.cat([x5, x7], dim=1)
+        # x7 = self.steer_1(x5, x7)#8+8
+        x8 = self.residual_block_1_none_3(x7)  # 8
+        x8, _, _ = self.edge_2(x8, dege3)
+
+        x9 = self.residual_block_up_1(x8)
+        x4 = self.conv_4(x4)
+        x9 = torch.cat([x4, x9], dim=1)
+        #x9 = self.steer_2(x4, x9)  # 4+8
+        x9 = self.residual_block_none1(x9)  # 6
+        x9, _, _ = self.edge(x9, dege4)
+
+        x10 = self.residual_block_up_2(x9)
+        x3 = self.conv_5(x3)
+        x10 = torch.cat([x3, x10], dim=1)
+        # x10 = self.steer_3(x3, x10)  # 2+6
+        x10 = self.residual_block_none2(x10)  # 6
+        x10, _, _ = self.edge1(x10, dege5)
+
+        x11 = self.residual_block_up_3(x10)
+        x2 = self.conv_6(x2)
+        x11 = torch.cat([x2, x11], dim=1)
+       # x11 = self.steer_4(x2, x11)  # 2+4
+        x11 = self.residual_block_none3(x11)  # 4
+        x11, _, _ = self.edge2(x11, dege6)
+
+        x12 = self.residual_block_up_4(x11)  # 3
+        x1 = self.conv_7(x1)
+        x12 = torch.cat([x1, x12], dim=1)
+        x12 = self.residual_block_none4(x12)  # 2
+        x12, _, _ = self.edge3(x12, dege7)
+
+        x13 = self.residual_block_none5(x12)#1
+        # x14 = self.residual_block_none6(x14)  # 1
+        x15 = self.conv_2(x13)
+        x15 = torch.sigmoid(x15)
+
+        return x15, x_edge
+
+class Unet_liu_e_3(nn.Module):
+    def __init__(self, dim=opt.dim, activate='relu'):
+        super(Unet_liu_e_3, self).__init__()
+        self.dim = dim
+        self.activate = activate
+        self.conv_1 = nn.Conv2d(in_channels=3, out_channels=dim, kernel_size=3, stride=1, padding=1)
+        self.bn1 = nn.BatchNorm2d(1 * dim)
+        # 256x256
+        self.residual_block_down_1 = ResidualBlockDown('1', 1 * dim, 2 * dim, activate='leaky_relu')
+        self.residual_block_down_2 = ResidualBlockDown('2', 2 * dim, 2 * dim, activate='leaky_relu')
+
+        # 128x128
+        # --------------------------边缘----------------------------
+        # self.residual_block_2_down_2 = non_symmetricBlock('Res0', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
+        #                                                   down="ture")
+        # self.residual_block_3_down_2 = non_symmetricBlock('Res1', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
+        #                                                   down="ture")
+        #self.residual_block_2_down_2 = ResidualBlockDown('Res2', 2 * dim, 2 * dim, activate='leaky_relu')
+        self.residual_block_3_down_2 = ResidualBlockDown('Res2', 2 * dim, 4 * dim, activate='leaky_relu')
+
+        self.residual_block_4_down_2 = ResidualBlockDown('Res2', 4 * dim, 6 * dim, activate='leaky_relu')
+
+        self.residual_block_4_none_2 = ResidualBlock('non2', 6 * dim, 6 * dim, activate='leaky_relu')
+        self.residual_block_1_up_2 = ResidualBlockUp('Res3', 6 * dim, 4 * dim, activate='leaky_relu')
+        self.residual_block_2_up_2 = ResidualBlockUp('Res4', 4 * dim, 4 * dim, activate='leaky_relu')
+        self.residual_block_2_up_3 = ResidualBlockUp('Res5', 4 * dim, 2 * dim, activate='leaky_relu')
+        self.residual_block_2_up_4 = ResidualBlockUp('Res6', 2 * dim, 1 * dim, activate='leaky_relu')
+
+        # self.conv4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=2, padding=1)
+
+        self.conv8 = nn.Conv2d(in_channels=dim, out_channels=1, kernel_size=3, stride=1, padding=1)
+        # -------------------------------------------------------------------------------------------------------------
+
+        self.residual_block_down_3 = ResidualBlockDown('3', 2 * dim, 4 * dim, activate='leaky_relu')
+        self.edge_0 = edge4('edge_0',4 * dim, 4* dim)  # 主 边
+        self.residual_block_none_3 = ResidualBlock('4',  4* dim, 4 * dim, activate='leaky_relu')
+        # 32x32
+        self.residual_block_down_4 = ResidualBlockDown('5', 4 * dim, 8 * dim, activate='leaky_relu')
+        self.edge_1 = edge4('edge_1',  8 * dim, 6 * dim)  # 主路特征，边缘特征的输入输出
+        self.residual_block_none_4 = ResidualBlock('6', 8 * dim, 8 * dim, activate='leaky_relu')
+        # 16x16
+        self.residual_block_1_none_1 = ResidualBlock('7', 8 * dim, 8 * dim, activate='leaky_relu')
+        self.residual_block_1_none_2 = ResidualBlock('8', 8 * dim, 8 * dim, activate='leaky_relu')
+        self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+        # self.steer_1 = steer('steer1', input_dim=8 * dim, output_dim=16 * dim)
+        self.residual_block_1_none_3 = ResidualBlock('9', 16 * dim, 8 * dim, activate='leaky_relu')
+        self.edge_2 = edge5('edge_2', 8 * dim,8 * dim, 6 * dim)  #浅 深 边
+
+        # 16x16
+        self.residual_block_up_1 = ResidualBlockUp('10', 16 * dim, 8 * dim, activate='leaky_relu')
+        self.conv_4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+        # self.steer_2 = steer('steer2', input_dim=4 * dim, output_dim=12 * dim)# 浅 concat
+        self.residual_block_none1 = ResidualBlock('11', 12* dim, 6 * dim, activate='leaky_relu')
+        self.edge = edge5('edge', 4 * dim, 6 * dim, 4 * dim)
+
+        # 32x32
+        self.residual_block_up_2 = ResidualBlockUp('12', 10 * dim, 6 * dim, activate='leaky_relu')
+        self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.steer_3 = steer('steer3', input_dim=2 * dim, output_dim=8 * dim)# 浅 concat
+        self.residual_block_none2 = ResidualBlock('13', 8 * dim, 4 * dim, activate='leaky_relu')
+        self.edge1 = edge5('edge1', 2 * dim, 4 * dim,4 * dim)  # 边缘的输入输出
+
+        # 64x64
+        self.residual_block_up_3 = ResidualBlockUp('14', 4 * dim, 4 * dim, activate='leaky_relu')
+        self.conv_6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+       # self.steer_4 = steer('steer4', input_dim=2 * dim, output_dim=6 * dim)# 浅 concat
+        self.residual_block_none3 = ResidualBlock('15',6 * dim, 2 * dim, activate='leaky_relu')
+        self.edge2 = edge5('edge2', 2 * dim, 2 * dim, 2* dim)  # 边缘的输入输出
+
+        # 128x128
+        self.residual_block_up_4 = ResidualBlockUp('16', 2 * dim, 2 * dim, activate='leaky_relu')  # 4 2
+        self.conv_7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
+        # self.steer_5 = steer('steer5', input_dim=1 * dim, output_dim=3 * dim)# 浅 concat
+        self.residual_block_none4 = ResidualBlock('17', 3 * dim, 1 * dim, activate='leaky_relu')  # 2 1
+        self.edge3 = edge5('edge3', 1 * dim, dim, dim)  # 边缘的输入输出
+        # 256x256
+        # self.residual_block_none5 = ResidualBlock('18', 2* dim, 1 * dim, activate='leaky_relu')
+        self.residual_block_none5 = ResidualBlock('18', 1 * dim, 1 * dim, activate='leaky_relu')  # 1 1
+        # self.residual_block_none6 =  ResidualBlock('19', 2 * dim, 1 * dim, activate='leaky_relu')
+
+        self.conv_2 = nn.Conv2d(in_channels=1 * dim, out_channels=1, kernel_size=3, stride=1, padding=1)
+        # self.pooing = StripPooling(4 * dim, [32, 16], "nearest")
+
+        # self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_6 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_7 = nn.Conv2d(in_channels=12 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+        self.leaky_relu = nn.LeakyReLU()
+        # self.PSP = PSPModule(features=1 * dim, out_features=1 * dim)
+        if self.activate == 'relu':
+            self.nonlinear = nn.ReLU()
+        else:
+            self.nonlinear = nn.LeakyReLU()
+
+    def forward(self, x):
+        x1 = self.conv_1(x)
+        # torch.Size([4, 1, 256
+        x1 = self.bn1(x1)
+        x1 = self.leaky_relu(x1)
+        x2 = self.residual_block_down_1(x1)
+        x3 = self.residual_block_down_2(x2)
+
+        # --------------------边缘-------------------------------------
+        #dege0 = self.residual_block_2_down_2(x2)
+        dege1 = self.residual_block_3_down_2(x3)  # 2
+        dege2 = self.residual_block_4_down_2(dege1)
+        # 4
+        dege3 = self.residual_block_4_none_2(dege2)
+        # dege_2 = self.conv4(dege2)
+        # dege3_1 = torch.cat([dege3, dege_2], dim=1)
+
+        dege4 = self.residual_block_1_up_2(dege3)  # 4
+        # dege_1 = self.conv5(dege1)
+        # dege4_1 = torch.cat([dege4, dege_1], dim=1)
+
+        dege5 = self.residual_block_2_up_2(dege4)  # 4
+        # dege_0 = self.conv6(dege0)
+        # dege5_1 = torch.cat([dege5, dege_0], dim=1)
+
+        dege6 = self.residual_block_2_up_3(dege5)  # 2
+        # x_1 = self.conv7(x1)
+        # dege6_1 = torch.cat([dege6, x_1], dim=1)
+
+        dege7 = self.residual_block_2_up_4(dege6)  # 1
+
+        x_3 = self.conv8(dege7)
+        x_edge = torch.sigmoid(x_3)
+        # ---------------------------------------------------------
+
+        x4 = self.residual_block_down_3(x3)  # 2
+        x4 = self.residual_block_none_3(x4)  # 2
+        x4, _, _ = self.edge_0(x4, dege1)  # 4
+
+        x5 = self.residual_block_down_4(x4)  # 4
+        x5 = self.residual_block_none_4(x5)  # 4
+        x5, _, _ = self.edge_1(x5, dege2)  # 8
+
+        x6 = self.residual_block_1_none_1(x5)  # 8
+        x7 = self.residual_block_1_none_2(x6)
+        x5 = self.conv_3(x5)
+        x7 = torch.cat([x5, x7], dim=1)
+        # x7 = self.steer_1(x5, x7)#8+8
+        x8 = self.residual_block_1_none_3(x7)  # 8
+        x8, _, _ = self.edge_2(x5,x8, dege3)
+
+        x9 = self.residual_block_up_1(x8)
+        x4 = self.conv_4(x4)
+        x9 = torch.cat([x4, x9], dim=1)
+        #x9 = self.steer_2(x4, x9)  # 4+8
+        x9 = self.residual_block_none1(x9)  # 6
+        x9, _, _ = self.edge(x4,x9, dege4)
+
+        x10 = self.residual_block_up_2(x9)
+        x3 = self.conv_5(x3)
+        x10 = torch.cat([x3, x10], dim=1)
+        # x10 = self.steer_3(x3, x10)  # 2+6
+        x10 = self.residual_block_none2(x10)  # 6
+        #x10, _, _ = self.edge1(x3,x10, dege5)
+
+        x11 = self.residual_block_up_3(x10)
+        x2 = self.conv_6(x2)
+        x11 = torch.cat([x2, x11], dim=1)
+       # x11 = self.steer_4(x2, x11)  # 2+4
+        x11 = self.residual_block_none3(x11)  # 4
+        #x11, _, _ = self.edge2(x2,x11, dege6)
+
+        x12 = self.residual_block_up_4(x11)  # 3
+        x1 = self.conv_7(x1)
+        x12 = torch.cat([x1, x12], dim=1)
+        x12 = self.residual_block_none4(x12)  # 2
+        #x12, _, _ = self.edge3(x1,x12, dege7)
+
+        x13 = self.residual_block_none5(x12)#1
+        # x14 = self.residual_block_none6(x14)  # 1
+        x15 = self.conv_2(x13)
+        x15 = torch.sigmoid(x15)
+
+        return x15, x_edge
+
+
+# class Unet_liu_e_4(nn.Module):
+#     def __init__(self, dim=opt.dim, activate='relu'):
+#         super(Unet_liu_e_4, self).__init__()
+#         self.dim = dim
+#         self.activate = activate
+#         self.conv_1 = nn.Conv2d(in_channels=3, out_channels=dim, kernel_size=3, stride=1, padding=1)
+#         self.bn1 = nn.BatchNorm2d(1 * dim)
+#         # 256x256
+#         self.residual_block_down_1 = ResidualBlockDown('1', 1 * dim, 2 * dim, activate='leaky_relu')
+#         self.residual_block_down_2 = ResidualBlockDown('2', 2 * dim, 2 * dim, activate='leaky_relu')
+#
+#         # 128x128
+#         # --------------------------边缘----------------------------
+#         # self.residual_block_2_down_2 = non_symmetricBlock('Res0', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
+#         #                                                   down="ture")
+#         # self.residual_block_3_down_2 = non_symmetricBlock('Res1', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
+#         #                                                   down="ture")
+#         #self.residual_block_2_down_2 = ResidualBlockDown('Res2', 2 * dim, 2 * dim, activate='leaky_relu')
+#         self.residual_block_3_down_2 = ResidualBlockDown('Res2', 2 * dim, 4 * dim, activate='leaky_relu')
+#
+#         self.residual_block_4_down_2 = ResidualBlockDown('Res2', 4 * dim, 6 * dim, activate='leaky_relu')
+#
+#         self.residual_block_4_none_2 = ResidualBlock('non2', 6 * dim, 6 * dim, activate='leaky_relu')
+#         self.residual_block_1_up_2 = ResidualBlockUp('Res3', 6 * dim, 4 * dim, activate='leaky_relu')
+#         self.residual_block_2_up_2 = ResidualBlockUp('Res4', 4 * dim, 4 * dim, activate='leaky_relu')
+#         self.residual_block_2_up_3 = ResidualBlockUp('Res5', 4 * dim, 2 * dim, activate='leaky_relu')
+#         self.residual_block_2_up_4 = ResidualBlockUp('Res6', 2 * dim, 1 * dim, activate='leaky_relu')
+#
+#         # self.conv4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+#         # self.conv5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+#         # self.conv6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+#         # self.conv7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=2, padding=1)
+#
+#         self.conv8 = nn.Conv2d(in_channels=dim, out_channels=1, kernel_size=3, stride=1, padding=1)
+#         # -------------------------------------------------------------------------------------------------------------
+#
+#         self.residual_block_down_3 = ResidualBlockDown('3', 2 * dim, 4 * dim, activate='leaky_relu')
+#         self.edge_0 = edge4_1('edge_0',4 * dim, 4* dim)  # 主 边
+#         self.residual_block_none_3 = ResidualBlock('4',  4* dim, 4 * dim, activate='leaky_relu')
+#         # 32x32
+#         self.residual_block_down_4 = ResidualBlockDown('5', 4 * dim, 8 * dim, activate='leaky_relu')
+#         self.edge_1 = edge4_1('edge_1',  8 * dim, 6 * dim)  # 主路特征，边缘特征的输入输出
+#         self.residual_block_none_4 = ResidualBlock('6', 8 * dim, 8 * dim, activate='leaky_relu')
+#         # 16x16
+#         self.residual_block_1_none_1 = ResidualBlock('7', 8 * dim, 8 * dim, activate='leaky_relu')
+#         self.residual_block_1_none_2 = ResidualBlock('8', 8 * dim, 8 * dim, activate='leaky_relu')
+#         self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+#         self.steer_1 = steer1('steer1', 8 * dim, 8 * dim)
+#         self.residual_block_1_none_3 = ResidualBlock('9', 16 * dim, 8 * dim, activate='leaky_relu')
+#         self.edge_2 = edge5_1('edge_2', 8 * dim,8 * dim, 6 * dim)  #浅 深 边
+#
+#         # 16x16
+#         self.residual_block_up_1 = ResidualBlockUp('10', 16 * dim, 8 * dim, activate='leaky_relu')
+#         self.conv_4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+#         self.steer_2 = steer1('steer2',8 * dim, 4 * dim)# 浅 concat
+#         self.residual_block_none1 = ResidualBlock('11', 12* dim, 6 * dim, activate='leaky_relu')
+#         self.edge = edge5_1('edge', 4 * dim, 6 * dim, 4 * dim)
+#
+#         # 32x32
+#         self.residual_block_up_2 = ResidualBlockUp('12', 10 * dim, 6 * dim, activate='leaky_relu')
+#         self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+#         self.steer_3 = steer1('steer3',  6 * dim,2 * dim)# 浅 concat
+#         self.residual_block_none2 = ResidualBlock('13', 8 * dim, 4 * dim, activate='leaky_relu')
+#         self.edge1 = edge5_1('edge1', 2 * dim, 4 * dim,4 * dim)  # 边缘的输入输出
+#
+#         # 64x64
+#         self.residual_block_up_3 = ResidualBlockUp('14', 6 * dim, 4 * dim, activate='leaky_relu')
+#         self.conv_6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+#         self.steer_4 = steer1('steer4',  4 * dim, 2* dim)# 浅 concat
+#         self.residual_block_none3 = ResidualBlock('15',6 * dim, 2 * dim, activate='leaky_relu')
+#         self.edge2 = edge5_1('edge2', 2 * dim, 2 * dim, 2* dim)  # 边缘的输入输出
+#
+#         # 128x128
+#         self.residual_block_up_4 = ResidualBlockUp('16', 2 * dim, 2 * dim, activate='leaky_relu')  # 4 2
+#         self.conv_7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
+#         self.steer_5 = steer1('steer5',  2*dim, dim)# 浅 concat
+#         self.residual_block_none4 = ResidualBlock('17', 3 * dim, 1 * dim, activate='leaky_relu')  # 2 1
+#         self.edge3 = edge5_1('edge3', 1 * dim, dim, dim)  # 边缘的输入输出
+#         # 256x256
+#         # self.residual_block_none5 = ResidualBlock('18', 2* dim, 1 * dim, activate='leaky_relu')
+#         self.residual_block_none5 = ResidualBlock('18', 1 * dim, 1 * dim, activate='leaky_relu')  # 1 1
+#         # self.residual_block_none6 =  ResidualBlock('19', 2 * dim, 1 * dim, activate='leaky_relu')
+#
+#         self.conv_2 = nn.Conv2d(in_channels=1 * dim, out_channels=1, kernel_size=3, stride=1, padding=1)
+#         # self.pooing = StripPooling(4 * dim, [32, 16], "nearest")
+#
+#         # self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+#         # self.conv_4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+#         # self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+#         # self.conv_6 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
+#         # self.conv_7 = nn.Conv2d(in_channels=12 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+#         self.leaky_relu = nn.LeakyReLU()
+#         # self.PSP = PSPModule(features=1 * dim, out_features=1 * dim)
+#         if self.activate == 'relu':
+#             self.nonlinear = nn.ReLU()
+#         else:
+#             self.nonlinear = nn.LeakyReLU()
+#
+#     def forward(self, x):
+#         x1 = self.conv_1(x)
+#         # torch.Size([4, 1, 256
+#         x1 = self.bn1(x1)
+#         x1 = self.leaky_relu(x1)
+#         x2 = self.residual_block_down_1(x1)
+#         x3 = self.residual_block_down_2(x2)
+#
+#         # --------------------边缘-------------------------------------
+#         #dege0 = self.residual_block_2_down_2(x2)
+#         dege1 = self.residual_block_3_down_2(x3)  # 2
+#         dege2 = self.residual_block_4_down_2(dege1)
+#         # 4
+#         dege3 = self.residual_block_4_none_2(dege2)
+#         # dege_2 = self.conv4(dege2)
+#         # dege3_1 = torch.cat([dege3, dege_2], dim=1)
+#
+#         dege4 = self.residual_block_1_up_2(dege3)  # 4
+#         # dege_1 = self.conv5(dege1)
+#         # dege4_1 = torch.cat([dege4, dege_1], dim=1)
+#
+#         dege5 = self.residual_block_2_up_2(dege4)  # 4
+#         # dege_0 = self.conv6(dege0)
+#         # dege5_1 = torch.cat([dege5, dege_0], dim=1)
+#
+#         dege6 = self.residual_block_2_up_3(dege5)  # 2
+#         # x_1 = self.conv7(x1)
+#         # dege6_1 = torch.cat([dege6, x_1], dim=1)
+#
+#         dege7 = self.residual_block_2_up_4(dege6)  # 1
+#
+#         x_3 = self.conv8(dege7)
+#         x_edge = torch.sigmoid(x_3)
+#         # ---------------------------------------------------------
+#
+#         x4 = self.residual_block_down_3(x3)  # 2
+#         x4 = self.residual_block_none_3(x4)  # 2
+#         x4, _, _ = self.edge_0(x4, dege1)
+#
+#         x5 = self.residual_block_down_4(x4)  # 4
+#         x5 = self.residual_block_none_4(x5)  # 4
+#         x5, _, _ = self.edge_1(x5, dege2)
+#
+#         x6 = self.residual_block_1_none_1(x5)  # 8
+#         x7 = self.residual_block_1_none_2(x6)
+#         # x5 = self.conv_3(x5)
+#         # x7 = torch.cat([x5, x7], dim=1)
+#         x7 = self.steer_1(x5, x7)#8+8
+#         x8 = self.residual_block_1_none_3(x7)  # 8
+#         x8, _, _ = self.edge_2(x5,x8, dege3)
+#
+#         x9 = self.residual_block_up_1(x8)
+#         # x4 = self.conv_4(x4)
+#         # x9 = torch.cat([x4, x9], dim=1)
+#         x9 = self.steer_2(x4, x9)  # 4+8
+#         x9 = self.residual_block_none1(x9)  # 6
+#         x9, _, _ = self.edge(x4,x9, dege4)
+#
+#         x10 = self.residual_block_up_2(x9)
+#         # x3 = self.conv_5(x3)
+#         # x10 = torch.cat([x3, x10], dim=1)
+#         x10 = self.steer_3(x3, x10)  # 2+6
+#         x10 = self.residual_block_none2(x10)  # 6
+#         x10, _, _ = self.edge1(x3,x10, dege5)
+#
+#         x11 = self.residual_block_up_3(x10)
+#         # x2 = self.conv_6(x2)
+#         # x11 = torch.cat([x2, x11], dim=1)
+#         x11 = self.steer_4(x2, x11)  # 2+4
+#         x11 = self.residual_block_none3(x11)  # 4
+#         #x11, _, _ = self.edge2(x2,x11, dege6)
+#
+#         x12 = self.residual_block_up_4(x11)  # 3
+#         # x1 = self.conv_7(x1)
+#         # x12 = torch.cat([x1, x12], dim=1)
+#         x12 = self.steer_5(x1, x12)
+#         x12 = self.residual_block_none4(x12)  # 2
+#         #x12, _, _ = self.edge3(x1,x12, dege7)
+#
+#         x13 = self.residual_block_none5(x12)#1
+#         # x14 = self.residual_block_none6(x14)  # 1
+#         x15 = self.conv_2(x13)
+#         x15 = torch.sigmoid(x15)
+#
+#         return x15, x_edge
+# #结构修改
+# class Unet_liu_e_5(nn.Module):
+#     def __init__(self, dim=opt.dim, activate='relu'):
+#         super(Unet_liu_e_5, self).__init__()
+#         self.dim = dim
+#         self.activate = activate
+#         self.conv_1 = nn.Conv2d(in_channels=3, out_channels=dim, kernel_size=3, stride=1, padding=1)
+#         self.bn1 = nn.BatchNorm2d(1 * dim)
+#         # 256x256
+#         self.residual_block_down_1 = ResidualBlockDown('1', 1 * dim, 2 * dim, activate='leaky_relu')
+#         self.residual_block_down_2 = ResidualBlockDown('2', 2 * dim, 2 * dim, activate='leaky_relu')
+#
+#         # 128x128
+#         # --------------------------边缘----------------------------
+#         # self.residual_block_2_down_2 = non_symmetricBlock('Res0', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
+#         #                                                   down="ture")
+#         # self.residual_block_3_down_2 = non_symmetricBlock('Res1', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
+#         #                                                   down="ture")
+#         #self.residual_block_2_down_2 = ResidualBlockDown('Res2', 2 * dim, 2 * dim, activate='leaky_relu')
+#
+#         self.residual_block_2_down_2 = non_symmetricBlock('Res0', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',down="ture")
+#         self.residual_block_3_down_2 = ResidualBlockDown('Res1', 2 * dim, 4* dim, activate='leaky_relu')
+#         self.residual_block_4_down_2 = ResidualBlockDown('Res2', 4 * dim, 6 * dim, activate='leaky_relu')
+#         self.residual_block_4_none_2 = non_symmetricBlock('non2', 6 * dim, 4 * dim, 6 * dim, activate='leaky_relu')
+#
+#         # self.residual_block_3_down_2 = ResidualBlockDown('Res2', 2 * dim, 4 * dim, activate='leaky_relu')
+#         #
+#         # self.residual_block_4_down_2 = ResidualBlockDown('Res2', 4 * dim, 6 * dim, activate='leaky_relu')
+#         #
+#         # self.residual_block_4_none_2 = ResidualBlock('non2', 6 * dim, 6 * dim, activate='leaky_relu')
+#         self.residual_block_1_up_2 = ResidualBlockUp('Res3', 6 * dim, 4 * dim, activate='leaky_relu')
+#         self.residual_block_2_up_2 = ResidualBlockUp('Res4', 4 * dim, 4 * dim, activate='leaky_relu')
+#         self.residual_block_2_up_3 = ResidualBlockUp('Res5', 4 * dim, 2 * dim, activate='leaky_relu')
+#         self.residual_block_2_up_4 = ResidualBlockUp('Res6', 2 * dim, 1 * dim, activate='leaky_relu')
+#
+#         # self.conv4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+#         # self.conv5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+#         # self.conv6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+#         # self.conv7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=2, padding=1)
+#
+#         self.conv8 = nn.Conv2d(in_channels=dim, out_channels=1, kernel_size=3, stride=1, padding=1)
+#         # -------------------------------------------------------------------------------------------------------------
+#
+#         self.residual_block_down_3 = ResidualBlockDown('3', 2 * dim, 4 * dim, activate='leaky_relu')
+#         self.edge_0 = edge4_1('edge_0',4 * dim, 4* dim)  # 主 边
+#         self.residual_block_none_3 = ResidualBlock('4',  4* dim, 4 * dim, activate='leaky_relu')
+#         # 32x32
+#         self.residual_block_down_4 = ResidualBlockDown('5', 4 * dim, 8 * dim, activate='leaky_relu')
+#         self.edge_1 = edge4_1('edge_1',  8 * dim, 6 * dim)  # 主路特征，边缘特征的输入输出
+#         self.residual_block_none_4 = ResidualBlock('6', 8 * dim, 8 * dim, activate='leaky_relu')
+#         # 16x16
+#         self.residual_block_1_none_1 = ResidualBlock('7', 8 * dim, 8 * dim, activate='leaky_relu')
+#         self.residual_block_1_none_2 = ResidualBlock('8', 8 * dim, 8 * dim, activate='leaky_relu')
+#         self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+#         self.steer_1 = steer1('steer1', 8 * dim, 8 * dim)
+#         self.residual_block_1_none_3 = ResidualBlock('9', 16 * dim, 8 * dim, activate='leaky_relu')
+#         self.edge_2 = edge5_1('edge_2', 8 * dim,8 * dim, 6 * dim)  #浅 深 边
+#
+#         # 16x16
+#         self.residual_block_up_1 = ResidualBlockUp('10', 16 * dim, 8 * dim, activate='leaky_relu')
+#         self.conv_4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+#         self.steer_2 = steer1('steer2',8 * dim, 4 * dim)# 浅 concat
+#         self.residual_block_none1 = ResidualBlock('11', 12* dim, 6 * dim, activate='leaky_relu')
+#         self.edge = edge5_1('edge', 4 * dim, 6 * dim, 4 * dim)
+#
+#         # 32x32
+#         self.residual_block_up_2 = ResidualBlockUp('12', 10 * dim, 6 * dim, activate='leaky_relu')
+#         self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+#         self.steer_3 = steer1('steer3',  6 * dim,2 * dim)# 浅 concat
+#         self.residual_block_none2 = ResidualBlock('13', 8 * dim, 4 * dim, activate='leaky_relu')
+#         self.edge1 = edge5_1('edge1', 2 * dim, 4 * dim,4 * dim)  # 边缘的输入输出
+#
+#         # 64x64
+#         self.residual_block_up_3 = ResidualBlockUp('14', 6 * dim, 4 * dim, activate='leaky_relu')
+#         self.conv_6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+#         self.steer_4 = steer1('steer4',  4 * dim, 2* dim)# 浅 concat
+#         self.residual_block_none3 = ResidualBlock('15',6 * dim, 2 * dim, activate='leaky_relu')
+#         self.edge2 = edge5_1('edge2', 2 * dim, 2 * dim, 2* dim)  # 边缘的输入输出
+#
+#         # 128x128
+#         self.residual_block_up_4 = ResidualBlockUp('16', 2 * dim, 2 * dim, activate='leaky_relu')  # 4 2
+#         self.conv_7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
+#         self.steer_5 = steer1('steer5',  2*dim, dim)# 浅 concat
+#         self.residual_block_none4 = ResidualBlock('17', 3 * dim, 1 * dim, activate='leaky_relu')  # 2 1
+#         self.edge3 = edge5_1('edge3', 1 * dim, dim, dim)  # 边缘的输入输出
+#         # 256x256
+#         # self.residual_block_none5 = ResidualBlock('18', 2* dim, 1 * dim, activate='leaky_relu')
+#         self.residual_block_none5 = ResidualBlock('18', 1 * dim, 1 * dim, activate='leaky_relu')  # 1 1
+#         # self.residual_block_none6 =  ResidualBlock('19', 2 * dim, 1 * dim, activate='leaky_relu')
+#
+#         self.conv_2 = nn.Conv2d(in_channels=1 * dim, out_channels=1, kernel_size=3, stride=1, padding=1)
+#         # self.pooing = StripPooling(4 * dim, [32, 16], "nearest")
+#
+#         # self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+#         # self.conv_4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+#         # self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+#         # self.conv_6 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
+#         # self.conv_7 = nn.Conv2d(in_channels=12 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+#         self.leaky_relu = nn.LeakyReLU()
+#         # self.PSP = PSPModule(features=1 * dim, out_features=1 * dim)
+#         if self.activate == 'relu':
+#             self.nonlinear = nn.ReLU()
+#         else:
+#             self.nonlinear = nn.LeakyReLU()
+#
+#     def forward(self, x):
+#         x1 = self.conv_1(x)
+#         # torch.Size([4, 1, 256
+#         x1 = self.bn1(x1)
+#         x1 = self.leaky_relu(x1)
+#         x2 = self.residual_block_down_1(x1)
+#         x3 = self.residual_block_down_2(x2)
+#
+#         # --------------------边缘-------------------------------------
+#         dege0 = self.residual_block_2_down_2(x2)
+#         dege1 = self.residual_block_3_down_2(dege0)  # 2
+#         dege2 = self.residual_block_4_down_2(dege1)
+#         # 4
+#         dege3 = self.residual_block_4_none_2(dege2)
+#         # dege_2 = self.conv4(dege2)
+#         # dege3_1 = torch.cat([dege3, dege_2], dim=1)
+#
+#         dege4 = self.residual_block_1_up_2(dege3)  # 4
+#         # dege_1 = self.conv5(dege1)
+#         # dege4_1 = torch.cat([dege4, dege_1], dim=1)
+#
+#         dege5 = self.residual_block_2_up_2(dege4)  # 4
+#         # dege_0 = self.conv6(dege0)
+#         # dege5_1 = torch.cat([dege5, dege_0], dim=1)
+#
+#         dege6 = self.residual_block_2_up_3(dege5)  # 2
+#         # x_1 = self.conv7(x1)
+#         # dege6_1 = torch.cat([dege6, x_1], dim=1)
+#
+#         dege7 = self.residual_block_2_up_4(dege6)  # 1
+#
+#         x_3 = self.conv8(dege7)
+#         x_edge = torch.sigmoid(x_3)
+#         # ---------------------------------------------------------
+#
+#         x4 = self.residual_block_down_3(x3)  # 2
+#         x4 = self.residual_block_none_3(x4)  # 2
+#         x4, _, _ = self.edge_0(x4, dege1)
+#
+#         x5 = self.residual_block_down_4(x4)  # 4
+#         x5 = self.residual_block_none_4(x5)  # 4
+#         x5, _, _ = self.edge_1(x5, dege2)
+#
+#         x6 = self.residual_block_1_none_1(x5)  # 8
+#         x7 = self.residual_block_1_none_2(x6)
+#         # x5 = self.conv_3(x5)
+#         # x7 = torch.cat([x5, x7], dim=1)
+#         x7 = self.steer_1(x5, x7)#8+8
+#         x8 = self.residual_block_1_none_3(x7)  # 8
+#         x8, _, _ = self.edge_2(x5,x8, dege3)
+#
+#         x9 = self.residual_block_up_1(x8)
+#         # x4 = self.conv_4(x4)
+#         # x9 = torch.cat([x4, x9], dim=1)
+#         x9 = self.steer_2(x4, x9)  # 4+8
+#         x9 = self.residual_block_none1(x9)  # 6
+#         x9, _, _ = self.edge(x4,x9, dege4)
+#
+#         x10 = self.residual_block_up_2(x9)
+#         # x3 = self.conv_5(x3)
+#         # x10 = torch.cat([x3, x10], dim=1)
+#         x10 = self.steer_3(x3, x10)  # 2+6
+#         x10 = self.residual_block_none2(x10)  # 6
+#         x10, _, _ = self.edge1(x3,x10, dege5)
+#
+#         x11 = self.residual_block_up_3(x10)
+#         # x2 = self.conv_6(x2)
+#         # x11 = torch.cat([x2, x11], dim=1)
+#         x11 = self.steer_4(x2, x11)  # 2+4
+#         x11 = self.residual_block_none3(x11)  # 4
+#         #x11, _, _ = self.edge2(x2,x11, dege6)
+#
+#         x12 = self.residual_block_up_4(x11)  # 3
+#         # x1 = self.conv_7(x1)
+#         # x12 = torch.cat([x1, x12], dim=1)
+#         x12 = self.steer_5(x1, x12)
+#         x12 = self.residual_block_none4(x12)  # 2
+#         #x12, _, _ = self.edge3(x1,x12, dege7)
+#
+#         x13 = self.residual_block_none5(x12)#1
+#         # x14 = self.residual_block_none6(x14)  # 1
+#         x15 = self.conv_2(x13)
+#         x15 = torch.sigmoid(x15)
+#
+#         return x15, x_edge
+class Unet_liu_e_5(nn.Module):
+    def __init__(self, dim=opt.dim, activate='relu'):
+        super(Unet_liu_e_5, self).__init__()
+        self.dim = dim
+        self.activate = activate
+        self.conv_1 = nn.Conv2d(in_channels=3, out_channels=dim, kernel_size=3, stride=1, padding=1)
+        self.bn1 = nn.BatchNorm2d(1 * dim)
+        # 256x256
+        self.residual_block_down_1 = ResidualBlockDown('1', 1 * dim, 2 * dim, activate='leaky_relu')
+        self.residual_block_down_2 = ResidualBlockDown('2', 2 * dim, 2 * dim, activate='leaky_relu')
+
+        # 128x128
+        # --------------------------边缘----------------------------
+        # self.residual_block_2_down_2 = non_symmetricBlock('Res0', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
+        #                                                   down="ture")
+        # self.residual_block_3_down_2 = non_symmetricBlock('Res1', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
+        #                                                   down="ture")
+        #self.residual_block_2_down_2 = ResidualBlockDown('Res2', 2 * dim, 2 * dim, activate='leaky_relu')
+        self.residual_block_3_down_2 = ResidualBlockDown('Res2', 2 * dim, 4 * dim, activate='leaky_relu')
+
+        self.residual_block_4_down_2 = ResidualBlockDown('Res2', 4 * dim, 6 * dim, activate='leaky_relu')
+
+        self.residual_block_4_none_2 = ResidualBlock('non2', 6 * dim, 6 * dim, activate='leaky_relu')
+        self.residual_block_1_up_2 = ResidualBlockUp('Res3', 6 * dim, 4 * dim, activate='leaky_relu')
+        self.residual_block_2_up_2 = ResidualBlockUp('Res4', 4 * dim, 4 * dim, activate='leaky_relu')
+        self.residual_block_2_up_3 = ResidualBlockUp('Res5', 4 * dim, 2 * dim, activate='leaky_relu')
+        self.residual_block_2_up_4 = ResidualBlockUp('Res6', 2 * dim, 1 * dim, activate='leaky_relu')
+
+        # self.conv4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=2, padding=1)
+
+        self.conv8 = nn.Conv2d(in_channels=dim, out_channels=1, kernel_size=3, stride=1, padding=1)
+        # -------------------------------------------------------------------------------------------------------------
+
+        self.residual_block_down_3 = ResidualBlockDown('3', 2 * dim, 4 * dim, activate='leaky_relu')
+        self.edge_0 = edge4('edge_0',4 * dim, 4* dim)  # 主 边
+        self.residual_block_none_3 = ResidualBlock('4',  4* dim, 4 * dim, activate='leaky_relu')
+        # 32x32
+        self.residual_block_down_4 = ResidualBlockDown('5', 4 * dim, 8 * dim, activate='leaky_relu')
+        self.edge_1 = edge4('edge_1',  8 * dim, 6 * dim)  # 主路特征，边缘特征的输入输出
+        self.residual_block_none_4 = ResidualBlock('6', 8 * dim, 8 * dim, activate='leaky_relu')
+        # 16x16
+        self.residual_block_1_none_1 = ResidualBlock('7', 8 * dim, 8 * dim, activate='leaky_relu')
+        self.residual_block_1_none_2 = ResidualBlock('8', 8 * dim, 8 * dim, activate='leaky_relu')
+        #self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+        self.steer_1 = steer1('steer1', 8 * dim, 8 * dim)
+        self.residual_block_1_none_3 = ResidualBlock('9', 16 * dim, 8 * dim, activate='leaky_relu')
+        self.edge_2 = edge5_1('edge_2', 8 * dim,8 * dim, 6 * dim)  #浅 深 边
+
+        # 16x16
+        self.residual_block_up_1 = ResidualBlockUp('10', 16 * dim, 8 * dim, activate='leaky_relu')
+        #self.conv_4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+        self.steer_2 = steer1('steer2',8 * dim, 4 * dim)# 浅 concat
+        self.residual_block_none1 = ResidualBlock('11', 12* dim, 6 * dim, activate='leaky_relu')
+        self.edge = edge5('edge', 4 * dim, 6 * dim, 4 * dim)
+
+        # 32x32
+        self.residual_block_up_2 = ResidualBlockUp('12', 10 * dim, 6 * dim, activate='leaky_relu')
+        #self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        self.steer_3 = steer1('steer3',  6 * dim,2 * dim)# 浅 concat
+        self.residual_block_none2 = ResidualBlock('13', 8 * dim, 4 * dim, activate='leaky_relu')
+        self.edge1 = edge5('edge1', 2 * dim, 4 * dim,4 * dim)  # 边缘的输入输出
+
+        # 64x64
+        self.residual_block_up_3 = ResidualBlockUp('14', 6 * dim, 4 * dim, activate='leaky_relu')
+        #self.conv_6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        self.steer_4 = steer1('steer4',  4 * dim, 2* dim)# 浅 concat
+        self.residual_block_none3 = ResidualBlock('15',6 * dim, 2 * dim, activate='leaky_relu')
+        self.edge2 = edge5('edge2', 2 * dim, 2 * dim, 2* dim)  # 边缘的输入输出
+
+        # 128x128
+        self.residual_block_up_4 = ResidualBlockUp('16', 2 * dim, 1 * dim, activate='leaky_relu')  # 4 2
+        #self.conv_7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
+        self.steer_5 = steer1('steer5',  dim, dim)# 浅 concat
+        self.residual_block_none4 = ResidualBlock('17', 2 * dim, 1 * dim, activate='leaky_relu')  # 2 1
+        #self.edge3 = edge5('edge3', 1 * dim, dim, dim)  # 边缘的输入输出
+        # 256x256
+        # self.residual_block_none5 = ResidualBlock('18', 2* dim, 1 * dim, activate='leaky_relu')
+        #self.residual_block_none5 = ResidualBlock('18', 2 * dim, 1 * dim, activate='leaky_relu')  # 1 1
+        # self.residual_block_none6 =  ResidualBlock('19', 2 * dim, 1 * dim, activate='leaky_relu')
+
+        self.conv_2 = nn.Conv2d(in_channels=1 * dim, out_channels=1, kernel_size=3, stride=1, padding=1)
+        # self.pooing = StripPooling(4 * dim, [32, 16], "nearest")
+
+        # self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_6 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_7 = nn.Conv2d(in_channels=12 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+        self.leaky_relu = nn.LeakyReLU()
+        # self.PSP = PSPModule(features=1 * dim, out_features=1 * dim)
+        if self.activate == 'relu':
+            self.nonlinear = nn.ReLU()
+        else:
+            self.nonlinear = nn.LeakyReLU()
+
+    def forward(self, x):
+        x1 = self.conv_1(x)
+        # torch.Size([4, 1, 256
+        x1 = self.bn1(x1)
+        x1 = self.leaky_relu(x1)
+        x2 = self.residual_block_down_1(x1)
+        x3 = self.residual_block_down_2(x2)
+
+        # --------------------边缘-------------------------------------
+        #dege0 = self.residual_block_2_down_2(x2)
+        dege1 = self.residual_block_3_down_2(x3)  # 2
+        dege2 = self.residual_block_4_down_2(dege1)
+        # 4
+        dege3 = self.residual_block_4_none_2(dege2)
+        # dege_2 = self.conv4(dege2)
+        # dege3_1 = torch.cat([dege3, dege_2], dim=1)
+
+        dege4 = self.residual_block_1_up_2(dege3)  # 4
+        # dege_1 = self.conv5(dege1)
+        # dege4_1 = torch.cat([dege4, dege_1], dim=1)
+
+        dege5 = self.residual_block_2_up_2(dege4)  # 4
+        # dege_0 = self.conv6(dege0)
+        # dege5_1 = torch.cat([dege5, dege_0], dim=1)
+
+        dege6 = self.residual_block_2_up_3(dege5)  # 2
+        # x_1 = self.conv7(x1)
+        # dege6_1 = torch.cat([dege6, x_1], dim=1)
+
+        dege7 = self.residual_block_2_up_4(dege6)  # 1
+
+        x_3 = self.conv8(dege7)
+        x_edge = torch.sigmoid(x_3)
+        # ---------------------------------------------------------
+
+        x4 = self.residual_block_down_3(x3)  # 2
+        x4 = self.residual_block_none_3(x4)  # 2
+        x4, _, _ = self.edge_0(x4, dege1)
+
+        x5 = self.residual_block_down_4(x4)  # 4
+        x5 = self.residual_block_none_4(x5)  # 4
+        x5, _, _ = self.edge_1(x5, dege2)
+
+        x6 = self.residual_block_1_none_1(x5)  # 8
+        x7 = self.residual_block_1_none_2(x6)
+        # x5 = self.conv_3(x5)
+        # x7 = torch.cat([x5, x7], dim=1)
+        x7 = self.steer_1(x5, x7)#8+8
+        x8 = self.residual_block_1_none_3(x7)  # 8
+        x8, _, _ = self.edge_2(x5,x8, dege3)
+
+        x9 = self.residual_block_up_1(x8)
+        # x4 = self.conv_4(x4)
+        # x9 = torch.cat([x4, x9], dim=1)
+        x9 = self.steer_2(x4, x9)  # 4+8
+        x9 = self.residual_block_none1(x9)  # 6
+        x9, _, _ = self.edge(x4,x9, dege4)
+
+        x10 = self.residual_block_up_2(x9)
+        # x3 = self.conv_5(x3)
+        # x10 = torch.cat([x3, x10], dim=1)
+        x10 = self.steer_3(x3, x10)  # 2+6
+        x10 = self.residual_block_none2(x10)  # 6
+        x10, _, _ = self.edge1(x3,x10, dege5)
+
+        x11 = self.residual_block_up_3(x10)
+        # x2 = self.conv_6(x2)
+        # x11 = torch.cat([x2, x11], dim=1)
+        x11 = self.steer_4(x2, x11)  # 2+4
+        x11 = self.residual_block_none3(x11)  # 4
+        #x11, _, _ = self.edge2(x2,x11, dege6)
+
+        x12 = self.residual_block_up_4(x11)  # 3
+        # x1 = self.conv_7(x1)
+        # x12 = torch.cat([x1, x12], dim=1)
+        x12 = self.steer_5(x1, x12)
+        x12 = self.residual_block_none4(x12)  # 2
+        #x12, _, _ = self.edge3(x1,x12, dege7)
+
+        #x13 = self.residual_block_none5(x12)#1
+        # x14 = self.residual_block_none6(x14)  # 1
+        x15 = self.conv_2(x12)
+        x15 = torch.sigmoid(x15)
+
+        return x15, x_edge
+
+class Unet_liu_e_4(nn.Module):
+    def __init__(self, dim=opt.dim, activate='relu'):
+        super(Unet_liu_e_4, self).__init__()
+        self.dim = dim
+        self.activate = activate
+        self.conv_1 = nn.Conv2d(in_channels=3, out_channels=dim, kernel_size=3, stride=1, padding=1)
+        self.bn1 = nn.BatchNorm2d(1 * dim)
+        # 256x256
+        self.residual_block_down_1 = ResidualBlockDown('1', 1 * dim, 2 * dim, activate='leaky_relu')
+        self.residual_block_down_2 = ResidualBlockDown('2', 2 * dim, 2 * dim, activate='leaky_relu')
+
+        # 128x128
+        # --------------------------边缘----------------------------
+        # self.residual_block_2_down_2 = non_symmetricBlock('Res0', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
+        #                                                   down="ture")
+        # self.residual_block_3_down_2 = non_symmetricBlock('Res1', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
+        #                                                   down="ture")
+        #self.residual_block_2_down_2 = ResidualBlockDown('Res2', 2 * dim, 2 * dim, activate='leaky_relu')
+        self.residual_block_3_down_2 = ResidualBlockDown('Res2', 2 * dim, 4 * dim, activate='leaky_relu')
+
+        self.residual_block_4_down_2 = ResidualBlockDown('Res2', 4 * dim, 6 * dim, activate='leaky_relu')
+
+        self.residual_block_4_none_2 = ResidualBlock('non2', 6 * dim, 6 * dim, activate='leaky_relu')
+        self.residual_block_1_up_2 = ResidualBlockUp('Res3', 6 * dim, 4 * dim, activate='leaky_relu')
+        self.residual_block_2_up_2 = ResidualBlockUp('Res4', 4 * dim, 4 * dim, activate='leaky_relu')
+        self.residual_block_2_up_3 = ResidualBlockUp('Res5', 4 * dim, 2 * dim, activate='leaky_relu')
+        self.residual_block_2_up_4 = ResidualBlockUp('Res6', 2 * dim, 1 * dim, activate='leaky_relu')
+
+        # self.conv4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=2, padding=1)
+
+        self.conv8 = nn.Conv2d(in_channels=dim, out_channels=1, kernel_size=3, stride=1, padding=1)
+        # -------------------------------------------------------------------------------------------------------------
+
+        self.residual_block_down_3 = ResidualBlockDown('3', 2 * dim, 4 * dim, activate='leaky_relu')
+        self.edge_0 = edge4('edge_0',4 * dim, 4* dim)  # 主 边
+        self.residual_block_none_3 = ResidualBlock('4',  4* dim, 4 * dim, activate='leaky_relu')
+        # 32x32
+        self.residual_block_down_4 = ResidualBlockDown('5', 4 * dim, 8 * dim, activate='leaky_relu')
+        self.edge_1 = edge4('edge_1',  8 * dim, 6 * dim)  # 主路特征，边缘特征的输入输出
+        self.residual_block_none_4 = ResidualBlock('6', 8 * dim, 8 * dim, activate='leaky_relu')
+        # 16x16
+        self.residual_block_1_none_1 = ResidualBlock('7', 8 * dim, 8 * dim, activate='leaky_relu')
+        self.residual_block_1_none_2 = ResidualBlock('8', 8 * dim, 8 * dim, activate='leaky_relu')
+        self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+        self.steer_1 = steer1('steer1', 8 * dim, 8 * dim)
+        self.residual_block_1_none_3 = ResidualBlock('9', 16 * dim, 8 * dim, activate='leaky_relu')
+        self.edge_2 = edge5_1('edge_2', 8 * dim,8 * dim, 6 * dim)  #浅 深 边
+
+        # 16x16
+        self.residual_block_up_1 = ResidualBlockUp('10', 16 * dim, 8 * dim, activate='leaky_relu')
+        self.conv_4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+        self.steer_2 = steer1('steer2',8 * dim, 4 * dim)# 浅 concat
+        self.residual_block_none1 = ResidualBlock('11', 12* dim, 6 * dim, activate='leaky_relu')
+        self.edge = edge5('edge', 4 * dim, 6 * dim, 4 * dim)
+
+        # 32x32
+        self.residual_block_up_2 = ResidualBlockUp('12', 10 * dim, 6 * dim, activate='leaky_relu')
+        self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        self.steer_3 = steer1('steer3',  6 * dim,2 * dim)# 浅 concat
+        self.residual_block_none2 = ResidualBlock('13', 8 * dim, 4 * dim, activate='leaky_relu')
+        self.edge1 = edge5('edge1', 2 * dim, 4 * dim,4 * dim)  # 边缘的输入输出
+
+        # 64x64
+        self.residual_block_up_3 = ResidualBlockUp('14', 6 * dim, 4 * dim, activate='leaky_relu')
+        self.conv_6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        self.steer_4 = steer1('steer4',  4 * dim, 2* dim)# 浅 concat
+        self.residual_block_none3 = ResidualBlock('15',6 * dim, 2 * dim, activate='leaky_relu')
+        self.edge2 = edge5('edge2', 2 * dim, 2 * dim, 2* dim)  # 边缘的输入输出
+
+        # 128x128
+        self.residual_block_up_4 = ResidualBlockUp('16', 2 * dim, 2 * dim, activate='leaky_relu')  # 4 2
+        self.conv_7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
+        self.steer_5 = steer1('steer5',  2*dim, dim)# 浅 concat
+        self.residual_block_none4 = ResidualBlock('17', 3 * dim, 1 * dim, activate='leaky_relu')  # 2 1
+        self.edge3 = edge5('edge3', 1 * dim, dim, dim)  # 边缘的输入输出
+        # 256x256
+        # self.residual_block_none5 = ResidualBlock('18', 2* dim, 1 * dim, activate='leaky_relu')
+        self.residual_block_none5 = ResidualBlock('18', 1 * dim, 1 * dim, activate='leaky_relu')  # 1 1
+        # self.residual_block_none6 =  ResidualBlock('19', 2 * dim, 1 * dim, activate='leaky_relu')
+
+        self.conv_2 = nn.Conv2d(in_channels=1 * dim, out_channels=1, kernel_size=3, stride=1, padding=1)
+        # self.pooing = StripPooling(4 * dim, [32, 16], "nearest")
+
+        # self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_6 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_7 = nn.Conv2d(in_channels=12 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+        self.leaky_relu = nn.LeakyReLU()
+        # self.PSP = PSPModule(features=1 * dim, out_features=1 * dim)
+        if self.activate == 'relu':
+            self.nonlinear = nn.ReLU()
+        else:
+            self.nonlinear = nn.LeakyReLU()
+
+    def forward(self, x):
+        x1 = self.conv_1(x)
+        # torch.Size([4, 1, 256
+        x1 = self.bn1(x1)
+        x1 = self.leaky_relu(x1)
+        x2 = self.residual_block_down_1(x1)
+        x3 = self.residual_block_down_2(x2)
+
+        # --------------------边缘-------------------------------------
+        #dege0 = self.residual_block_2_down_2(x2)
+        dege1 = self.residual_block_3_down_2(x3)  # 2
+        dege2 = self.residual_block_4_down_2(dege1)
+        # 4
+        dege3 = self.residual_block_4_none_2(dege2)
+        # dege_2 = self.conv4(dege2)
+        # dege3_1 = torch.cat([dege3, dege_2], dim=1)
+
+        dege4 = self.residual_block_1_up_2(dege3)  # 4
+        # dege_1 = self.conv5(dege1)
+        # dege4_1 = torch.cat([dege4, dege_1], dim=1)
+
+        dege5 = self.residual_block_2_up_2(dege4)  # 4
+        # dege_0 = self.conv6(dege0)
+        # dege5_1 = torch.cat([dege5, dege_0], dim=1)
+
+        dege6 = self.residual_block_2_up_3(dege5)  # 2
+        # x_1 = self.conv7(x1)
+        # dege6_1 = torch.cat([dege6, x_1], dim=1)
+
+        dege7 = self.residual_block_2_up_4(dege6)  # 1
+
+        x_3 = self.conv8(dege7)
+        x_edge = torch.sigmoid(x_3)
+        # ---------------------------------------------------------
+
+        x4 = self.residual_block_down_3(x3)  # 2
+        x4 = self.residual_block_none_3(x4)  # 2
+        x4, _, _ = self.edge_0(x4, dege1)
+
+        x5 = self.residual_block_down_4(x4)  # 4
+        x5 = self.residual_block_none_4(x5)  # 4
+        x5, _, _ = self.edge_1(x5, dege2)
+
+        x6 = self.residual_block_1_none_1(x5)  # 8
+        x7 = self.residual_block_1_none_2(x6)
+        # x5 = self.conv_3(x5)
+        # x7 = torch.cat([x5, x7], dim=1)
+        x7 = self.steer_1(x5, x7)#8+8
+        x8 = self.residual_block_1_none_3(x7)  # 8
+        x8, _, _ = self.edge_2(x5,x8, dege3)
+
+        x9 = self.residual_block_up_1(x8)
+        # x4 = self.conv_4(x4)
+        # x9 = torch.cat([x4, x9], dim=1)
+        x9 = self.steer_2(x4, x9)  # 4+8
+        x9 = self.residual_block_none1(x9)  # 6
+        x9, _, _ = self.edge(x4,x9, dege4)
+
+        x10 = self.residual_block_up_2(x9)
+        # x3 = self.conv_5(x3)
+        # x10 = torch.cat([x3, x10], dim=1)
+        x10 = self.steer_3(x3, x10)  # 2+6
+        x10 = self.residual_block_none2(x10)  # 6
+        x10, _, _ = self.edge1(x3,x10, dege5)
+
+        x11 = self.residual_block_up_3(x10)
+        # x2 = self.conv_6(x2)
+        # x11 = torch.cat([x2, x11], dim=1)
+        x11 = self.steer_4(x2, x11)  # 2+4
+        x11 = self.residual_block_none3(x11)  # 4
+        #x11, _, _ = self.edge2(x2,x11, dege6)
+
+        x12 = self.residual_block_up_4(x11)  # 3
+        # x1 = self.conv_7(x1)
+        # x12 = torch.cat([x1, x12], dim=1)
+        x12 = self.steer_5(x1, x12)
+        x12 = self.residual_block_none4(x12)  # 2
+        #x12, _, _ = self.edge3(x1,x12, dege7)
+
+        #x13 = self.residual_block_none5(x12)#1
+        # x14 = self.residual_block_none6(x14)  # 1
+        x15 = self.conv_2(x12)
+        x15 = torch.sigmoid(x15)
+
+        return x15, x_edge
+
+class Unet_liu_e_4_bc_1(nn.Module):
+    def __init__(self, dim=opt.dim, activate='relu'):
+        super(Unet_liu_e_4_bc_1, self).__init__()
+        self.dim = dim
+        self.activate = activate
+
+        # 128x128
+        # --------------------------边缘----------------------------
+        # self.residual_block_2_down_2 = non_symmetricBlock('Res0', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
+        #                                                   down="ture")
+        # self.residual_block_3_down_2 = non_symmetricBlock('Res1', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
+        #                                                   down="ture")
+        self.conv_1_1 = nn.Conv2d(in_channels=3, out_channels=dim, kernel_size=3, stride=1, padding=1)
+        self.bn1_1 = nn.BatchNorm2d(1 * dim)
+        self.residual_block_1_down_2 = ResidualBlockDown('Res2', 1 * dim, 2 * dim, activate='leaky_relu')
+        self.residual_block_2_down_2 = ResidualBlockDown('Res2', 2 * dim, 2 * dim, activate='leaky_relu')
+        self.residual_block_3_down_2 = ResidualBlockDown('Res2', 2 * dim, 4 * dim, activate='leaky_relu')
+
+        self.residual_block_4_down_2 = ResidualBlockDown('Res2', 4 * dim, 6 * dim, activate='leaky_relu')
+
+        self.residual_block_4_none_2 = ResidualBlock('non2', 6 * dim, 6 * dim, activate='leaky_relu')
+        self.residual_block_1_up_2 = ResidualBlockUp('Res3', 6 * dim, 4 * dim, activate='leaky_relu')
+        self.residual_block_2_up_2 = ResidualBlockUp('Res4', 4 * dim, 4 * dim, activate='leaky_relu')
+        self.residual_block_2_up_3 = ResidualBlockUp('Res5', 4 * dim, 2 * dim, activate='leaky_relu')
+        self.residual_block_2_up_4 = ResidualBlockUp('Res6', 2 * dim, 1 * dim, activate='leaky_relu')
+
+        # self.conv4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=2, padding=1)
+
+        self.conv8 = nn.Conv2d(in_channels=dim, out_channels=1, kernel_size=3, stride=1, padding=1)
+        # -------------------------------------------------------------------------------------------------------------
+        self.conv_1 = nn.Conv2d(in_channels=3, out_channels=dim, kernel_size=3, stride=1, padding=1)
+        self.bn1 = nn.BatchNorm2d(1 * dim)
+        # 256x256
+        self.residual_block_down_1 = ResidualBlockDown('1', 1 * dim, 2 * dim, activate='leaky_relu')
+        self.edge_0 = edge4_1('edge_0',2 * dim, 2* dim)
+        self.residual_block_down_2 = ResidualBlockDown('2', 2 * dim, 2 * dim, activate='leaky_relu')
+        self.edge_1 = edge4_1('edge_1',2 * dim, 2* dim)
+        self.residual_block_down_3 = ResidualBlockDown('3', 2 * dim, 2 * dim, activate='leaky_relu')
+        self.edge_2 = edge4_1('edge_2',4 * dim, 4* dim)  # 主 边
+        self.residual_block_none_3 = ResidualBlock('4',  2* dim, 4 * dim, activate='leaky_relu')
+        # 32x32
+        self.residual_block_down_4 = ResidualBlockDown('5', 4 * dim, 4 * dim, activate='leaky_relu')
+        self.edge_3 = edge4_1('edge_3',  6 * dim, 8 * dim)  # 主路特征，边缘特征的输入输出
+        self.residual_block_none_4 = ResidualBlock('6', 4 * dim, 8 * dim, activate='leaky_relu')
+        # 16x16
+        self.residual_block_1_none_1 = ResidualBlock('7', 8 * dim, 8 * dim, activate='leaky_relu')
+        self.residual_block_1_none_2 = ResidualBlock('8', 8 * dim, 8 * dim, activate='leaky_relu')
+        self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+        self.steer_1 = steer1('steer1', 8 * dim, 8 * dim)
+        self.residual_block_1_none_3 = ResidualBlock('9', 16 * dim, 8 * dim, activate='leaky_relu')
+        self.edge_4 = edge5_3('edge_4', 6 * dim,8 * dim,8 * dim)
+
+        # 16x16
+        self.residual_block_up_1 = ResidualBlockUp('10',16 * dim, 8 * dim, activate='leaky_relu')
+        self.conv_4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
+        self.steer_2 = steer1('steer2',8 * dim, 4 * dim)# 浅 concat
+        self.residual_block_none1 = ResidualBlock('11', 12* dim, 6 * dim, activate='leaky_relu')
+        self.edge0 = edge5_3('edge0', 4 * dim, 6 * dim,4 * dim)
+
+        # 32x32
+        self.residual_block_up_2 = ResidualBlockUp('12', 10 * dim, 6 * dim, activate='leaky_relu')
+        self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        self.steer_3 = steer1('steer3',  6 * dim,2 * dim)# 浅 concat
+        self.residual_block_none2 = ResidualBlock('13', 8 * dim, 4 * dim, activate='leaky_relu')
+        self.edge1 = edge5_3('edge1', 4 * dim, 4 * dim,2 * dim)  # 边缘的输入输出
+
+        # 64x64
+        self.residual_block_up_3 = ResidualBlockUp('14', 6* dim, 4 * dim, activate='leaky_relu')
+        self.conv_6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        self.steer_4 = steer1('steer4',  4 * dim, 2* dim)# 浅 concat
+        self.residual_block_none3 = ResidualBlock('15',6 * dim, 2 * dim, activate='leaky_relu')
+        self.edge2 = edge5_3('edge2', 2 * dim, 2 * dim,2 * dim)  # 边缘的输入输出
+
+        # 128x128
+        self.residual_block_up_4 = ResidualBlockUp('16', 4 * dim, 2 * dim, activate='leaky_relu')  # 4 2
+        self.conv_7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
+        self.steer_5 = steer1('steer5',  2*dim, dim)# 浅 concat
+        self.residual_block_none4 = ResidualBlock('17', 3 * dim, 1 * dim, activate='leaky_relu')  # 2 1
+        self.edge3 = edge5_3('edge3', 1 * dim, dim, dim)
+        # self.edge3 = edge4_1('edge3', 1 * dim, dim)
+
+        self.residual_block_none5 = ResidualBlock('18', 2 * dim, 1 * dim, activate='leaky_relu')  # 1 1
+        # self.residual_block_none6 =  ResidualBlock('19', 2 * dim, 1 * dim, activate='leaky_relu')
+
+        self.conv_2 = nn.Conv2d(in_channels=1 * dim, out_channels=1, kernel_size=3, stride=1, padding=1)
+        # self.pooing = StripPooling(4 * dim, [32, 16], "nearest")
+
+        self.conv_3_1 = nn.Conv2d(in_channels=4 * dim, out_channels=8 * dim, kernel_size=3, stride=2, padding=1)
+        self.conv_4 = nn.Conv2d(in_channels=2 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_6 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
+        # self.conv_7 = nn.Conv2d(in_channels=12 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
+        self.leaky_relu = nn.LeakyReLU()
+        # self.PSP = PSPModule(features=1 * dim, out_features=1 * dim)
+        if self.activate == 'relu':
+            self.nonlinear = nn.ReLU()
+        else:
+            self.nonlinear = nn.LeakyReLU()
+        # for m in self.modules():
+        #     if isinstance(m, nn.Conv2d):
+        #         nn.init.kaiming_normal_(m.weight, mode='fan_in', nonlinearity='leaky_relu')
+        #     elif isinstance(m, nn.BatchNorm2d):
+        #         nn.init.constant_(m.weight, 1)
+        #         nn.init.constant_(m.bias, 0)
+    def forward(self, x):
+
+
+        # --------------------边缘-------------------------------------
+        dege = self.conv_1_1(x)
+        dege = self.bn1_1(dege)
+        dege = self.leaky_relu(dege)
+        dege = self.residual_block_1_down_2(dege)
+        dege0 = self.residual_block_2_down_2(dege)
+        dege1 = self.residual_block_3_down_2(dege0)  # 2
+        dege2 = self.residual_block_4_down_2(dege1)
+        # 4
+        dege3 = self.residual_block_4_none_2(dege2)
+
+        dege4 = self.residual_block_1_up_2(dege3)  # 4
+        dege5 = self.residual_block_2_up_2(dege4)  # 4
+        dege6 = self.residual_block_2_up_3(dege5)  # 2
+        dege7 = self.residual_block_2_up_4(dege6)  # 1
+
+        x_3 = self.conv8(dege7)
+        x_edge = torch.sigmoid(x_3)
+        # ---------------------------------------------------------
+        x1 = self.conv_1(x)
+        # torch.Size([4, 1, 256
+        x1 = self.bn1(x1)
+        x1 = self.leaky_relu(x1)
+        x2 = self.residual_block_down_1(x1)
+        x2 = self.edge_0(x2, dege)
+
+        x3 = self.residual_block_down_2(x2)
+        x3= self.edge_1(x3, dege0)
+
+        x4 = self.residual_block_down_3(x3)  # 2
+        x4 = self.residual_block_none_3(x4)  # 2
+        x4 = self.edge_2(x4, dege1)
+
+        x5 = self.residual_block_down_4(x4)  # 4
+        x5 = self.residual_block_none_4(x5)  # 4
+        x5= self.edge_3(x5, dege2)
+
+        x6 = self.residual_block_1_none_1(x5)  # 8
+        x7 = self.residual_block_1_none_2(x6)
+        # x5 = self.conv_3(x5)
+        # x7 = torch.cat([x5, x7], dim=1)
+        x7 = self.steer_1(x5, x7)#8+8
+        x8 = self.residual_block_1_none_3(x7)
+        x4_1 = self.conv_3_1(x4)
+        x8= self.edge_4(x8, dege3,x4_1)#x4
+
+        x9 = self.residual_block_up_1(x8)
+        # x4 = self.conv_4(x4)
+        # x9 = torch.cat([x4, x9], dim=1)
+        x9 = self.steer_2(x4, x9)  # 4+8
+        x9 = self.residual_block_none1(x9)  # 6
+        x9= self.edge0(x9, dege4,x4)
+
+        x10 = self.residual_block_up_2(x9)
+        # x3 = self.conv_5(x3)
+        # x10 = torch.cat([x3, x10], dim=1)
+        x10 = self.steer_3(x3, x10)  # 2+6
+        x10 = self.residual_block_none2(x10)  # 6
+        x10= self.edge1(x10, dege5,x3)
+
+        x11 = self.residual_block_up_3(x10)
+        #x2 = self.conv_6(x2)
+        # x11 = torch.cat([x2, x11], dim=1)
+        x11 = self.steer_4(x2, x11)  # 2+4
+        x11 = self.residual_block_none3(x11)  # 4
+        x11 = self.edge2(x11, dege6,x2)
+
+        x12 = self.residual_block_up_4(x11)  # 3
+        # x1 = self.conv_7(x1)
+        # x12 = torch.cat([x1, x12], dim=1)
+        x12 = self.steer_5(x1, x12)
+        x12 = self.residual_block_none4(x12)  # 2
+        #x12 = self.edge3(x12, dege7,x1)
+
+        #x13 = self.conv_4(x12)#1
+        #x13 = self.residual_block_none5(x12)  # 1
+        x15 = self.conv_2(x12)
+        x15 = torch.sigmoid(x15)
+
+        return x15, x_edge
+
+def seed_torch(seed=8):
+    random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)  # if you are using multi-GPU.
+    # torch.backends.cudnn.benchmark = False
+    # torch.backends.cudnn.deterministic = True
+
+
+transform = transforms.Compose([
+    transforms.ToTensor(),
+    ])
+
+class kitti_Dataset(Dataset):
+    def __init__(self, transform=None):
+        self.transform = transform
+    def __len__(self):
+        return len(os.listdir(opt.data_path))
+
+    def __getitem__(self, idx):
+        transform1 = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.RandomRotation(180, resample=False, expand=False, center=None,fill=None, ),
+            transforms.RandomResizedCrop(size=256, scale=(0.08, 2)),
+        ])
+        transform1_1 = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.RandomRotation(180, resample=False, expand=False, center=None,fill=None, ),
+            transforms.RandomErasing(p=0.5, scale=(0.02, 0.33), ratio=(0.3, 3.3), value=0, inplace=False),
+        ])
+        transform3 = transforms.RandomChoice([transform1, transform1_1])
+        transform2 = transforms.Compose([transforms.ColorJitter(brightness=0.5, contrast=0.2, saturation=0.2, hue=0.2)])
+
+        img_name = os.listdir(opt.data_path)
+        #img_name = list(self.img_name)[idx]
+        img_name = list(filter(file_filter, img_name))[idx]
+        imgA = cv2.imread(opt.data_path + '/' + img_name)
+        imgA = cv2.resize(imgA, (opt.image_scale_w, opt.image_scale_h))
+        #imgA = np.transpose(imgA, (0, 1,2))
+
+        imgB = cv2.imread(opt.label_path + '/' + img_name, 0)
+        imgB = cv2.resize(imgB, (opt.image_scale_w, opt.image_scale_h))
+        imgB = np.expand_dims(imgB, 2)
+
+        imgC = cv2.imread(opt.label_path1 + '/' + img_name, 0)
+        imgC = cv2.resize(imgC, (opt.image_scale_w, opt.image_scale_h))
+        imgC = np.expand_dims(imgC, 2)
+
+        buff = np.concatenate([imgC,imgB,imgA], axis=2)
+
+        buff = transform3(buff)
+
+        #buff = np.transpose(buff, (1,0, 2))
+        imgC,imgB,imgA = buff.split([1,1,3], dim=0)
+        imgA = transform2(imgA)
+        # if self.transform:
+        #     imgA = self.transform(imgA)
+        # imgB = torch.FloatTensor(imgB)
+        # imgB1 =  np.transpose(np.asarray(imgB), (1, 2, 0))
+        # imgA1 = np.transpose(np.asarray(imgA), (1, 2, 0))
+        # cv2.imwrite("F:/cord/other/test1" + '/{}.png'.format(img_name), imgB1*255 )
+        # cv2.imwrite("F:/cord/other/test1" + '/{}1.png'.format(img_name), imgA1*255)
+        return imgA,imgB,imgC
+
+img_road = kitti_Dataset(transform)
+
+train_dataloader = DataLoader(img_road, batch_size=opt.batch, shuffle=True,num_workers=10)
+
+
+# print("train_len:",len(train_dataloader.dataset), train_dataloader.dataset[7][1].shape)
+
+class test_Dataset(Dataset):
+
+    def __init__(self, transform=None):
+        self.transform = transform
+
+    def __len__(self):
+        return len(os.listdir(opt.test_data_path))
+
+    def __getitem__(self, idx):
+        img_name = os.listdir(opt.test_data_path)
+        img_name = list(filter(file_filter, img_name))[idx]
+        imgA = cv2.imread(opt.test_data_path + '/' + img_name)
+        height, width = imgA.shape[0], imgA.shape[1]
+        imgA = cv2.resize(imgA, (opt.image_scale_w, opt.image_scale_h))
+
+        if self.transform:
+            imgA = self.transform(imgA)
+        return imgA, img_name[:-4], height, width
+
+
+img_road_test = test_Dataset(transform)
+test_dataloader = DataLoader(img_road_test, batch_size=1, shuffle=False,num_workers=10)
+# print("test_len:",len(test_dataloader.dataset), train_dataloader.dataset[7][0].shape)
+
+# CrossEntropy_loss = nn.CrossEntropyLoss(reduction="mean")
+
+# seed_torch()
+unet = Unet_liu_e_4_bc_1()
+if torch.cuda.device_count()>1:
+    unet = nn.DataParallel(unet)
+unet = unet.to(device)
+# unet = nn.DataParallel(unet)
+
+if opt.load_model == 'True':
+    unet = torch.load('./model_sum/edge_road/model.pkl')
+
+
+def Floss(y, labels):
+    cross_entropy = torch.mean(
+        (torch.pow(y - labels, 2) / (torch.pow(y - labels, 2) + torch.pow(y, 2) + 0.0001)) * (-labels * torch.log(y))
+        - (torch.pow(y, 2) / (torch.pow(1 + labels - y, 2) + torch.pow(y, 2) + 0.0001)) * (1 - labels) * torch.log(
+            1 - y))
+    return cross_entropy
+
+
+class BCEFocalLoss(torch.nn.Module):
+
+    def __init__(self, gamma=2, alpha=0.9, reduction='elementwise_mean'):
+        super().__init__()
+        self.gamma = gamma
+        self.alpha = alpha
+        self.reduction = reduction
+
+    def forward(self, _input, target):
+        # pt = torch.sigmoid(_input)
+        pt = _input
+        alpha = self.alpha
+        loss = - alpha * (1 - pt) ** self.gamma * target * torch.log(pt) - \
+               (1 - alpha) * pt ** self.gamma * (1 - target) * torch.log(1 - pt)
+        if self.reduction == 'elementwise_mean':
+            loss = torch.mean(loss)
+        elif self.reduction == 'sum':
+            loss = torch.sum(loss)
+        return loss
+
+
+class IOU(torch.nn.Module):
+
+    def __init__(self, weight=None, size_average=True):
+        super(IOU, self).__init__()
+
+    def forward(self, logits, targets):
+        num = targets.size(0)
+        smooth = 0.1
+
+        probs = logits
+        m1 = probs.view(num, -1)
+        m2 = targets.view(num, -1)
+        m1 = torch.where(m1 > 0.5, 1, 0)
+        # m1 = torch.from_numpy(m1)
+        intersection = m1 * m2
+
+        score = (intersection.sum(1) + smooth) / (m1.sum(1) + m2.sum(1) - intersection.sum(1) + smooth)
+        score = 1 - score.sum() / num
+        return score
+
+
+loss_mse = nn.MSELoss()
+loss_IOU = IOU()
+loss1 = BCEFocalLoss()
+l1_loss = nn.L1Loss()
+loss = nn.BCELoss()
+smooth_loss = nn.SmoothL1Loss()
+MSE_Loss = nn.MSELoss()
+ssim_loss = pytorch_ssim.SSIM(window_size=11, size_average=True)
+iou_loss = pytorch_iou.IOU(size_average=True)
+unet_optimizer = optim.Adam(unet.parameters(), betas=[0.5, 0.999], lr=opt.lr)
+unet_scheduler = optim.lr_scheduler.MultiStepLR(unet_optimizer, milestones=[150,250,350,450], gamma=0.5)
+
+
+
+def train(device, train_dataloader, epoch):
+    unet.train()
+    #     Gen.train()
+    # Dis.train()
+    trained_samples = 0
+    for batch_idx, (road, road_label,edge_label) in enumerate(train_dataloader):
+        road, road_label,edge_label = road.to(device), road_label.to(device),edge_label.to(device)
+        detect,edge= unet(road)
+        ssim = ssim_loss(detect, road_label)
+        iou_out = iou_loss(detect, road_label)
+        unet_loss = loss(detect, road_label)+2*loss1(edge,edge_label)+(1 - ssim) + iou_out
+        unet_optimizer.zero_grad()
+        unet_loss.backward()
+        unet_optimizer.step()
+
+
+        progress = math.ceil(batch_idx / len(train_dataloader) * 50)
+        trained_samples += len(road)
+        if batch_idx % 200 == 0:
+            tqdm.write('[{}/{}] [{}/{}] Loss: {:.6f} '
+                       .format(epoch, num_epochs, batch_idx, len(train_dataloader), unet_loss.data.item()))
+        print('\rTrain epoch: {} {}/{} [{}]{}%'.format(epoch, trained_samples, len(train_dataloader.dataset),
+                                                       '-' * progress + '>', progress * 2), end='')
+
+        #torch.cuda.empty_cache()
+
+
+
+def test(device, test_dataloader):
+    unet.eval()
+    begin_time = time.time()
+    for batch_idx, (road, img_name, height, width) in enumerate(test_dataloader):
+        road = road.to(device)
+        # z = torch.randn(road.shape[0], 1, IMAGE_SCALE, IMAGE_SCALE, device=device)
+        # img_noise = torch.cat((road, z), dim=1)
+        # fake_feature = Gen(img_noise)
+        with torch.no_grad():
+            det_road,edge= unet(road)
+            label = det_road.cpu()
+            edge = edge.cpu()
+
+            label = np.array(label)
+            label = np.where(label > 0.5, 1, 0)
+            label = np.squeeze(label)
+            cv2.imwrite("./test_sum/edge_road" + '/{}.png'.format(img_name[0]), label * 255)
+
+
+            edge = np.array(edge)
+            edge = np.where(edge > 0.5, 1, 0)
+            edge = np.squeeze(edge)
+            cv2.imwrite("./test_sum/edge_road_edge" + '/{}.png'.format(img_name[0]), edge * 255)
+
+
+    print('Done!')
+    end_time = time.time()
+    runtime = end_time - begin_time
+    print('running time:', runtime)
+
+
+def iou(path_img, path_lab, epoch):
+    img_name = os.listdir(path_img)
+    img_name = list(filter(file_filter, img_name))
+    #     img_name.sort(key=lambda x:int(x[:-4]))
+    iou_list = []
+    p_list = []
+    r_list = []
+    F1_list = []
+    for i in range(len(img_name)):
+        det = img_name[i]
+        det = cv2.imread(path_img + '/' + det, 0)
+        lab = img_name[i]
+        lab = cv2.imread(path_lab + '/' + lab, 0)
+        lab = cv2.resize(lab, (opt.image_scale_w, opt.image_scale_h))
+        count0, count1, a, count2 = 0, 0, 0, 0
+        for j in range(det.shape[0]):
+            for k in range(det.shape[1]):
+                # TP
+                if det[j][k] != 0 and lab[j][k] != 0:
+                    count0 += 1
+                elif det[j][k] == 0 and lab[j][k] != 0:
+                    count1 += 1
+                elif det[j][k] != 0 and lab[j][k] == 0:
+                    count2 += 1
+                # iou = (count1 + count2)/(det.shape[0] * det.shape[1])
+        iou = count0 / (count1 + count0 + count2 + 0.0001)
+        p = count0 / (count0 + count2 + 0.0001)
+        r = count0 / (count0 + count1 + 0.0001)
+        F1 = (2 * p * r) / (p + r + 0.0001)
+
+        iou_list.append(iou)
+        p_list.append(p)
+        r_list.append(r)
+        F1_list.append(F1)
+
+    return sum(iou_list) / len(iou_list),sum(p_list) / len(p_list),sum(r_list) / len(r_list),sum(F1_list) / len(F1_list)
+
+
+if __name__ == '__main__':
+    if opt.mode == 'train':
+        with open('./edge_road.txt', "a") as f:
+            f.write('sum_road'+ '\n')
+        num_epochs = opt.num_epochs
+
+        for epoch in tqdm(range(num_epochs)):
+            train(device, train_dataloader, epoch)
+            unet_scheduler.step()
+            if epoch % 5 == 0:
+                torch.save(unet, './model_sum/edge_road/model.pkl')
+                print('testing...')
+                test(device, test_dataloader)
+                Miou, pre, recall, F1 = iou("./test_sum/edge_road", opt.test_label_path, epoch)
+                print('mean_iou:', Miou)
+                acc_edge,_,_,_ = iou("./test_sum/edge_road_edge", opt.test_label_path1, epoch)
+                print('mean_iou_edge:', acc_edge)
+                #writer.add_scalar('IOU', Miou, global_step=epoch)
+                #writer.add_scalar('edge_IOU', acc_edge, global_step=epoch)
+                with open('./edge_road.txt', "a") as f:
+                    f.write( "model_num" + " " + str(epoch) + '  mean_iou:' + str(Miou) + '  mean_pre:' + str(
+                        pre) + '  mean_recall:' + str(recall) + '  mean_F1:' + str(F1) +'    mean_iou_edge:' + str(acc_edge) + '\n')
+
+    if opt.mode == 'test':
+        test(device, test_dataloader)
+        iou(opt.test_img_path_1, opt.test_label_path, 'test')
