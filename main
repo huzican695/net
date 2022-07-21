@@ -82,7 +82,7 @@ def file_filter(f):
 
 # B
 class steer1(nn.Module):#A
-    def __init__(self, name, input_dim1,input_dim,activate='relu'): #掩膜  细节
+    def __init__(self, name, input_dim1,input_dim,activate='relu'): 
         super(steer1, self).__init__()
         self.name = name
         self.input_dim = input_dim
@@ -151,7 +151,7 @@ class edge3(nn.Module):
         x_res = x1+x3
 
         return x_res,x3,y_pow
-# #1*1压缩
+
 # class edge4(nn.Module):
 #     def __init__(self, name, input_dim,input_dim2, activate='relu'):#浅 边
 #         super(edge4, self).__init__()
@@ -173,7 +173,7 @@ class edge3(nn.Module):
 #         self.softmax = nn.Softmax(dim=-1)
 #         # self.cat=torch.cat(dim=1)
 #
-#     def forward(self, x, y):#浅 深 边
+#     def forward(self, x, y):
 #         y_cat = self.conv2(y)
 #         y_cat = self.nonlinear(y_cat)
 #         y_cat = self.conv2_1(y_cat)
@@ -188,9 +188,9 @@ class edge3(nn.Module):
 #         x_result = self.bn(x_result)
 #         x_result = self.nonlinear(x_result)
 #         return x_result,y_pow,x3
-# #1*1压缩
+# 
 # class edge5(nn.Module):
-#     def __init__(self, name, input_dim, input_dim1,input_dim2, activate='relu'):#浅 深 边 输出
+#     def __init__(self, name, input_dim, input_dim1,input_dim2, activate='relu'):
 #         super(edge5, self).__init__()
 #         self.name = name
 #         self.input_dim = input_dim
@@ -227,7 +227,7 @@ class edge3(nn.Module):
 #         x_result = self.bn(x_result)
 #         x_result = self.nonlinear(x_result)
 #         return x_result,y_pow,x3
-#直接相加 也可以不在乎
+#
 class edge1(nn.Module):
     def __init__(self, name, input_dim,output_dim,activate='relu'):
         super(edge1, self).__init__()
@@ -283,7 +283,7 @@ class edge1(nn.Module):
 #         return x_result,y_pow,x3
 #
 # class edge5_1(nn.Module):
-#     def __init__(self, name, input_dim, input_dim1,input_dim2, activate='relu'):#浅 深 边 输出
+#     def __init__(self, name, input_dim, input_dim1,input_dim2, activate='relu'):
 #         super(edge5_1, self).__init__()
 #         self.name = name
 #         self.input_dim = input_dim
@@ -364,7 +364,7 @@ class edge4_1(nn.Module):
         self.softmax = nn.Softmax(dim=-1)
         # self.cat=torch.cat(dim=1)
 
-    def forward(self, x, y):#浅 深 边
+    def forward(self, x, y):
         y_cat = self.conv2(y)
         # y_pow = y_cat.pow(2).sum(dim=1).unsqueeze(1)
         # y_pow = self.softmax(y_pow)
@@ -380,7 +380,7 @@ class edge4_1(nn.Module):
         return x_result
 
 class edge5_3(nn.Module):
-    def __init__(self, name, input_dim2, input_dim1, input_dim, activate='relu'):  # 边 深 浅
+    def __init__(self, name, input_dim2, input_dim1, input_dim, activate='relu'):  
         super(edge5_3, self).__init__()
         self.name = name
         self.input_dim = input_dim
@@ -427,7 +427,7 @@ class edge5_3(nn.Module):
         return x_result
 
 class edge5(nn.Module):
-    def __init__(self, name, input_dim, input_dim1,input_dim2, activate='relu'):#浅 深 边 输出
+    def __init__(self, name, input_dim, input_dim1,input_dim2, activate='relu'):
         super(edge5, self).__init__()
         self.name = name
         self.input_dim = input_dim
@@ -459,7 +459,7 @@ class edge5(nn.Module):
         x_result = self.nonlinear(x_result)
         return x_result,y_pow,x3
 # class edge5(nn.Module):
-#     def __init__(self, name, input_dim, input_dim1,input_dim2, activate='relu'):#浅 深 边 输出
+#     def __init__(self, name, input_dim, input_dim1,input_dim2, activate='relu'):
 #         super(edge5, self).__init__()
 #         self.name = name
 #         self.input_dim = input_dim
@@ -492,7 +492,7 @@ class edge5(nn.Module):
 #         return x_result,y_pow,x3
 
 # class edge4(nn.Module):
-#     def __init__(self, name, input_dim, input_dim2, activate='relu'):  # 浅 边
+#     def __init__(self, name, input_dim, input_dim2, activate='relu'): 
 #         super(edge4, self).__init__()
 #         self.name = name
 #         self.input_dim = input_dim
@@ -525,7 +525,7 @@ class edge5(nn.Module):
 #         return x_result, y_pow, x3
 
 # class edge5_1(nn.Module):
-#     def __init__(self, name, input_dim, input_dim1,input_dim2, activate='relu'):#浅 深 边 输出
+#     def __init__(self, name, input_dim, input_dim1,input_dim2, activate='relu'):
 #         super(edge5_1, self).__init__()
 #         self.name = name
 #         self.input_dim = input_dim
@@ -557,7 +557,7 @@ class edge5(nn.Module):
 #         x_result = self.nonlinear(x_result)
 #         return x_result,y_pow,x3
 class edge5_1(nn.Module):
-    def __init__(self, name, input_dim, input_dim1, input_dim2, activate='relu'):  # 浅 深 边 输出
+    def __init__(self, name, input_dim, input_dim1, input_dim2, activate='relu'):  
         super(edge5_1, self).__init__()
         self.name = name
         self.input_dim = input_dim
@@ -705,7 +705,7 @@ class ResidualBlock(nn.Module):
 
         return x
 
-#非对称卷积模块
+
 class non_symmetricBlock(nn.Module):
     def __init__(self, name, input_dim, output_dim,output_dim1, activate='relu',down = "False"):
         super(non_symmetricBlock, self).__init__()
@@ -795,11 +795,11 @@ class Unet_liu_e_2(nn.Module):
         # -------------------------------------------------------------------------------------------------------------
 
         self.residual_block_down_3 = ResidualBlockDown('3', 2 * dim, 4 * dim, activate='leaky_relu')
-        self.edge_0 = edge3('edge_0',4 * dim,2 * dim, 1* dim)    # 边缘特征的输入输出
+        self.edge_0 = edge3('edge_0',4 * dim,2 * dim, 1* dim)    
         self.residual_block_none_3 = ResidualBlock('4',  4* dim, 4 * dim, activate='leaky_relu')
         # 32x32
         self.residual_block_down_4 = ResidualBlockDown('5', 4 * dim, 8 * dim, activate='leaky_relu')
-        self.edge_1 = edge3('edge_1', 8 * dim, 4 * dim, 2 * dim) # 主路特征，边缘特征的输入输出
+        self.edge_1 = edge3('edge_1', 8 * dim, 4 * dim, 2 * dim) 
         self.residual_block_none_4 = ResidualBlock('6', 8 * dim, 8 * dim, activate='leaky_relu')
         # 16x16
         self.residual_block_1_none_1 = ResidualBlock('7', 8 * dim, 8 * dim, activate='leaky_relu')
@@ -807,7 +807,7 @@ class Unet_liu_e_2(nn.Module):
         self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
         # self.steer_1 = steer('steer1', input_dim=8 * dim, output_dim=16 * dim)
         self.residual_block_1_none_3 = ResidualBlock('9', 16 * dim, 8 * dim, activate='leaky_relu')
-        self.edge_2 = edge3('edge_2', 8 * dim,6 * dim, 4 * dim)  # 主路特征，边缘特征的输入输出
+        self.edge_2 = edge3('edge_2', 8 * dim,6 * dim, 4 * dim)  
 
         # 16x16
         self.residual_block_up_1 = ResidualBlockUp('10', 8 * dim, 8 * dim, activate='leaky_relu')
@@ -821,14 +821,14 @@ class Unet_liu_e_2(nn.Module):
         self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
         # self.steer_3 = steer('steer3', input_dim=2 * dim, output_dim=8 * dim)# 浅 concat
         self.residual_block_none2 = ResidualBlock('13', 8 * dim, 4 * dim, activate='leaky_relu')
-        self.edge1 = edge3('edge1', 4 * dim, 4 * dim,2 * dim)  # 边缘的输入输出
+        self.edge1 = edge3('edge1', 4 * dim, 4 * dim,2 * dim)
 
         # 64x64
         self.residual_block_up_3 = ResidualBlockUp('14', 4 * dim, 4 * dim, activate='leaky_relu')
         self.conv_6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
        # self.steer_4 = steer('steer4', input_dim=2 * dim, output_dim=6 * dim)# 浅 concat
         self.residual_block_none3 = ResidualBlock('15',6 * dim, 2 * dim, activate='leaky_relu')
-        self.edge2 = edge3('edge2', 2 * dim, 2 * dim,  dim)  # 边缘的输入输出
+        self.edge2 = edge3('edge2', 2 * dim, 2 * dim,  dim)  
 
         # 128x128
         self.residual_block_up_4 = ResidualBlockUp('16', 2 * dim, 2 * dim, activate='leaky_relu')  # 4 2
@@ -1137,7 +1137,7 @@ class Unet_liu_e_3(nn.Module):
 #         self.residual_block_down_2 = ResidualBlockDown('2', 2 * dim, 2 * dim, activate='leaky_relu')
 #
 #         # 128x128
-#         # --------------------------边缘----------------------------
+#         # --------------------------edge----------------------------
 #         # self.residual_block_2_down_2 = non_symmetricBlock('Res0', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
 #         #                                                   down="ture")
 #         # self.residual_block_3_down_2 = non_symmetricBlock('Res1', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
@@ -1162,11 +1162,11 @@ class Unet_liu_e_3(nn.Module):
 #         # -------------------------------------------------------------------------------------------------------------
 #
 #         self.residual_block_down_3 = ResidualBlockDown('3', 2 * dim, 4 * dim, activate='leaky_relu')
-#         self.edge_0 = edge4_1('edge_0',4 * dim, 4* dim)  # 主 边
+#         self.edge_0 = edge4_1('edge_0',4 * dim, 4* dim)
 #         self.residual_block_none_3 = ResidualBlock('4',  4* dim, 4 * dim, activate='leaky_relu')
 #         # 32x32
 #         self.residual_block_down_4 = ResidualBlockDown('5', 4 * dim, 8 * dim, activate='leaky_relu')
-#         self.edge_1 = edge4_1('edge_1',  8 * dim, 6 * dim)  # 主路特征，边缘特征的输入输出
+#         self.edge_1 = edge4_1('edge_1',  8 * dim, 6 * dim)  
 #         self.residual_block_none_4 = ResidualBlock('6', 8 * dim, 8 * dim, activate='leaky_relu')
 #         # 16x16
 #         self.residual_block_1_none_1 = ResidualBlock('7', 8 * dim, 8 * dim, activate='leaky_relu')
@@ -1174,12 +1174,12 @@ class Unet_liu_e_3(nn.Module):
 #         self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
 #         self.steer_1 = steer1('steer1', 8 * dim, 8 * dim)
 #         self.residual_block_1_none_3 = ResidualBlock('9', 16 * dim, 8 * dim, activate='leaky_relu')
-#         self.edge_2 = edge5_1('edge_2', 8 * dim,8 * dim, 6 * dim)  #浅 深 边
+#         self.edge_2 = edge5_1('edge_2', 8 * dim,8 * dim, 6 * dim) 
 #
 #         # 16x16
 #         self.residual_block_up_1 = ResidualBlockUp('10', 16 * dim, 8 * dim, activate='leaky_relu')
 #         self.conv_4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
-#         self.steer_2 = steer1('steer2',8 * dim, 4 * dim)# 浅 concat
+#         self.steer_2 = steer1('steer2',8 * dim, 4 * dim)
 #         self.residual_block_none1 = ResidualBlock('11', 12* dim, 6 * dim, activate='leaky_relu')
 #         self.edge = edge5_1('edge', 4 * dim, 6 * dim, 4 * dim)
 #
@@ -1188,21 +1188,21 @@ class Unet_liu_e_3(nn.Module):
 #         self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
 #         self.steer_3 = steer1('steer3',  6 * dim,2 * dim)# 浅 concat
 #         self.residual_block_none2 = ResidualBlock('13', 8 * dim, 4 * dim, activate='leaky_relu')
-#         self.edge1 = edge5_1('edge1', 2 * dim, 4 * dim,4 * dim)  # 边缘的输入输出
+#         self.edge1 = edge5_1('edge1', 2 * dim, 4 * dim,4 * dim)  
 #
 #         # 64x64
 #         self.residual_block_up_3 = ResidualBlockUp('14', 6 * dim, 4 * dim, activate='leaky_relu')
 #         self.conv_6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
 #         self.steer_4 = steer1('steer4',  4 * dim, 2* dim)# 浅 concat
 #         self.residual_block_none3 = ResidualBlock('15',6 * dim, 2 * dim, activate='leaky_relu')
-#         self.edge2 = edge5_1('edge2', 2 * dim, 2 * dim, 2* dim)  # 边缘的输入输出
+#         self.edge2 = edge5_1('edge2', 2 * dim, 2 * dim, 2* dim)  
 #
 #         # 128x128
 #         self.residual_block_up_4 = ResidualBlockUp('16', 2 * dim, 2 * dim, activate='leaky_relu')  # 4 2
 #         self.conv_7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
 #         self.steer_5 = steer1('steer5',  2*dim, dim)# 浅 concat
 #         self.residual_block_none4 = ResidualBlock('17', 3 * dim, 1 * dim, activate='leaky_relu')  # 2 1
-#         self.edge3 = edge5_1('edge3', 1 * dim, dim, dim)  # 边缘的输入输出
+#         self.edge3 = edge5_1('edge3', 1 * dim, dim, dim)  
 #         # 256x256
 #         # self.residual_block_none5 = ResidualBlock('18', 2* dim, 1 * dim, activate='leaky_relu')
 #         self.residual_block_none5 = ResidualBlock('18', 1 * dim, 1 * dim, activate='leaky_relu')  # 1 1
@@ -1308,7 +1308,7 @@ class Unet_liu_e_3(nn.Module):
 #         x15 = torch.sigmoid(x15)
 #
 #         return x15, x_edge
-# #结构修改
+#
 # class Unet_liu_e_5(nn.Module):
 #     def __init__(self, dim=opt.dim, activate='relu'):
 #         super(Unet_liu_e_5, self).__init__()
@@ -1356,7 +1356,7 @@ class Unet_liu_e_3(nn.Module):
 #         self.residual_block_none_3 = ResidualBlock('4',  4* dim, 4 * dim, activate='leaky_relu')
 #         # 32x32
 #         self.residual_block_down_4 = ResidualBlockDown('5', 4 * dim, 8 * dim, activate='leaky_relu')
-#         self.edge_1 = edge4_1('edge_1',  8 * dim, 6 * dim)  # 主路特征，边缘特征的输入输出
+#         self.edge_1 = edge4_1('edge_1',  8 * dim, 6 * dim)  
 #         self.residual_block_none_4 = ResidualBlock('6', 8 * dim, 8 * dim, activate='leaky_relu')
 #         # 16x16
 #         self.residual_block_1_none_1 = ResidualBlock('7', 8 * dim, 8 * dim, activate='leaky_relu')
@@ -1364,12 +1364,12 @@ class Unet_liu_e_3(nn.Module):
 #         self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
 #         self.steer_1 = steer1('steer1', 8 * dim, 8 * dim)
 #         self.residual_block_1_none_3 = ResidualBlock('9', 16 * dim, 8 * dim, activate='leaky_relu')
-#         self.edge_2 = edge5_1('edge_2', 8 * dim,8 * dim, 6 * dim)  #浅 深 边
+#         self.edge_2 = edge5_1('edge_2', 8 * dim,8 * dim, 6 * dim) 
 #
 #         # 16x16
 #         self.residual_block_up_1 = ResidualBlockUp('10', 16 * dim, 8 * dim, activate='leaky_relu')
 #         self.conv_4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
-#         self.steer_2 = steer1('steer2',8 * dim, 4 * dim)# 浅 concat
+#         self.steer_2 = steer1('steer2',8 * dim, 4 * dim)
 #         self.residual_block_none1 = ResidualBlock('11', 12* dim, 6 * dim, activate='leaky_relu')
 #         self.edge = edge5_1('edge', 4 * dim, 6 * dim, 4 * dim)
 #
@@ -1378,21 +1378,21 @@ class Unet_liu_e_3(nn.Module):
 #         self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
 #         self.steer_3 = steer1('steer3',  6 * dim,2 * dim)# 浅 concat
 #         self.residual_block_none2 = ResidualBlock('13', 8 * dim, 4 * dim, activate='leaky_relu')
-#         self.edge1 = edge5_1('edge1', 2 * dim, 4 * dim,4 * dim)  # 边缘的输入输出
+#         self.edge1 = edge5_1('edge1', 2 * dim, 4 * dim,4 * dim)  
 #
 #         # 64x64
 #         self.residual_block_up_3 = ResidualBlockUp('14', 6 * dim, 4 * dim, activate='leaky_relu')
 #         self.conv_6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
-#         self.steer_4 = steer1('steer4',  4 * dim, 2* dim)# 浅 concat
+#         self.steer_4 = steer1('steer4',  4 * dim, 2* dim)
 #         self.residual_block_none3 = ResidualBlock('15',6 * dim, 2 * dim, activate='leaky_relu')
-#         self.edge2 = edge5_1('edge2', 2 * dim, 2 * dim, 2* dim)  # 边缘的输入输出
+#         self.edge2 = edge5_1('edge2', 2 * dim, 2 * dim, 2* dim) 
 #
 #         # 128x128
 #         self.residual_block_up_4 = ResidualBlockUp('16', 2 * dim, 2 * dim, activate='leaky_relu')  # 4 2
 #         self.conv_7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
-#         self.steer_5 = steer1('steer5',  2*dim, dim)# 浅 concat
+#         self.steer_5 = steer1('steer5',  2*dim, dim)
 #         self.residual_block_none4 = ResidualBlock('17', 3 * dim, 1 * dim, activate='leaky_relu')  # 2 1
-#         self.edge3 = edge5_1('edge3', 1 * dim, dim, dim)  # 边缘的输入输出
+#         self.edge3 = edge5_1('edge3', 1 * dim, dim, dim) 
 #         # 256x256
 #         # self.residual_block_none5 = ResidualBlock('18', 2* dim, 1 * dim, activate='leaky_relu')
 #         self.residual_block_none5 = ResidualBlock('18', 1 * dim, 1 * dim, activate='leaky_relu')  # 1 1
@@ -1421,7 +1421,7 @@ class Unet_liu_e_3(nn.Module):
 #         x2 = self.residual_block_down_1(x1)
 #         x3 = self.residual_block_down_2(x2)
 #
-#         # --------------------边缘-------------------------------------
+#         # --------------------edge-------------------------------------
 #         dege0 = self.residual_block_2_down_2(x2)
 #         dege1 = self.residual_block_3_down_2(dege0)  # 2
 #         dege2 = self.residual_block_4_down_2(dege1)
@@ -1510,7 +1510,7 @@ class Unet_liu_e_5(nn.Module):
         self.residual_block_down_2 = ResidualBlockDown('2', 2 * dim, 2 * dim, activate='leaky_relu')
 
         # 128x128
-        # --------------------------边缘----------------------------
+        # --------------------------edge----------------------------
         # self.residual_block_2_down_2 = non_symmetricBlock('Res0', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
         #                                                   down="ture")
         # self.residual_block_3_down_2 = non_symmetricBlock('Res1', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
@@ -1539,7 +1539,7 @@ class Unet_liu_e_5(nn.Module):
         self.residual_block_none_3 = ResidualBlock('4',  4* dim, 4 * dim, activate='leaky_relu')
         # 32x32
         self.residual_block_down_4 = ResidualBlockDown('5', 4 * dim, 8 * dim, activate='leaky_relu')
-        self.edge_1 = edge4('edge_1',  8 * dim, 6 * dim)  # 主路特征，边缘特征的输入输出
+        self.edge_1 = edge4('edge_1',  8 * dim, 6 * dim)  
         self.residual_block_none_4 = ResidualBlock('6', 8 * dim, 8 * dim, activate='leaky_relu')
         # 16x16
         self.residual_block_1_none_1 = ResidualBlock('7', 8 * dim, 8 * dim, activate='leaky_relu')
@@ -1547,35 +1547,35 @@ class Unet_liu_e_5(nn.Module):
         #self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
         self.steer_1 = steer1('steer1', 8 * dim, 8 * dim)
         self.residual_block_1_none_3 = ResidualBlock('9', 16 * dim, 8 * dim, activate='leaky_relu')
-        self.edge_2 = edge5_1('edge_2', 8 * dim,8 * dim, 6 * dim)  #浅 深 边
+        self.edge_2 = edge5_1('edge_2', 8 * dim,8 * dim, 6 * dim)  
 
         # 16x16
         self.residual_block_up_1 = ResidualBlockUp('10', 16 * dim, 8 * dim, activate='leaky_relu')
         #self.conv_4 = nn.Conv2d(in_channels=4 * dim, out_channels=4 * dim, kernel_size=3, stride=1, padding=1)
-        self.steer_2 = steer1('steer2',8 * dim, 4 * dim)# 浅 concat
+        self.steer_2 = steer1('steer2',8 * dim, 4 * dim)
         self.residual_block_none1 = ResidualBlock('11', 12* dim, 6 * dim, activate='leaky_relu')
         self.edge = edge5('edge', 4 * dim, 6 * dim, 4 * dim)
 
         # 32x32
         self.residual_block_up_2 = ResidualBlockUp('12', 10 * dim, 6 * dim, activate='leaky_relu')
         #self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
-        self.steer_3 = steer1('steer3',  6 * dim,2 * dim)# 浅 concat
+        self.steer_3 = steer1('steer3',  6 * dim,2 * dim)
         self.residual_block_none2 = ResidualBlock('13', 8 * dim, 4 * dim, activate='leaky_relu')
-        self.edge1 = edge5('edge1', 2 * dim, 4 * dim,4 * dim)  # 边缘的输入输出
+        self.edge1 = edge5('edge1', 2 * dim, 4 * dim,4 * dim)  
 
         # 64x64
         self.residual_block_up_3 = ResidualBlockUp('14', 6 * dim, 4 * dim, activate='leaky_relu')
         #self.conv_6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
         self.steer_4 = steer1('steer4',  4 * dim, 2* dim)# 浅 concat
         self.residual_block_none3 = ResidualBlock('15',6 * dim, 2 * dim, activate='leaky_relu')
-        self.edge2 = edge5('edge2', 2 * dim, 2 * dim, 2* dim)  # 边缘的输入输出
+        self.edge2 = edge5('edge2', 2 * dim, 2 * dim, 2* dim) 
 
         # 128x128
         self.residual_block_up_4 = ResidualBlockUp('16', 2 * dim, 1 * dim, activate='leaky_relu')  # 4 2
         #self.conv_7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
         self.steer_5 = steer1('steer5',  dim, dim)# 浅 concat
         self.residual_block_none4 = ResidualBlock('17', 2 * dim, 1 * dim, activate='leaky_relu')  # 2 1
-        #self.edge3 = edge5('edge3', 1 * dim, dim, dim)  # 边缘的输入输出
+        #self.edge3 = edge5('edge3', 1 * dim, dim, dim) 
         # 256x256
         # self.residual_block_none5 = ResidualBlock('18', 2* dim, 1 * dim, activate='leaky_relu')
         #self.residual_block_none5 = ResidualBlock('18', 2 * dim, 1 * dim, activate='leaky_relu')  # 1 1
@@ -1604,7 +1604,7 @@ class Unet_liu_e_5(nn.Module):
         x2 = self.residual_block_down_1(x1)
         x3 = self.residual_block_down_2(x2)
 
-        # --------------------边缘-------------------------------------
+        # --------------------edge-------------------------------------
         #dege0 = self.residual_block_2_down_2(x2)
         dege1 = self.residual_block_3_down_2(x3)  # 2
         dege2 = self.residual_block_4_down_2(dege1)
@@ -1694,7 +1694,7 @@ class Unet_liu_e_4(nn.Module):
         self.residual_block_down_2 = ResidualBlockDown('2', 2 * dim, 2 * dim, activate='leaky_relu')
 
         # 128x128
-        # --------------------------边缘----------------------------
+        # --------------------------edge----------------------------
         # self.residual_block_2_down_2 = non_symmetricBlock('Res0', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
         #                                                   down="ture")
         # self.residual_block_3_down_2 = non_symmetricBlock('Res1', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
@@ -1719,11 +1719,11 @@ class Unet_liu_e_4(nn.Module):
         # -------------------------------------------------------------------------------------------------------------
 
         self.residual_block_down_3 = ResidualBlockDown('3', 2 * dim, 4 * dim, activate='leaky_relu')
-        self.edge_0 = edge4('edge_0',4 * dim, 4* dim)  # 主 边
+        self.edge_0 = edge4('edge_0',4 * dim, 4* dim) 
         self.residual_block_none_3 = ResidualBlock('4',  4* dim, 4 * dim, activate='leaky_relu')
         # 32x32
         self.residual_block_down_4 = ResidualBlockDown('5', 4 * dim, 8 * dim, activate='leaky_relu')
-        self.edge_1 = edge4('edge_1',  8 * dim, 6 * dim)  # 主路特征，边缘特征的输入输出
+        self.edge_1 = edge4('edge_1',  8 * dim, 6 * dim)  
         self.residual_block_none_4 = ResidualBlock('6', 8 * dim, 8 * dim, activate='leaky_relu')
         # 16x16
         self.residual_block_1_none_1 = ResidualBlock('7', 8 * dim, 8 * dim, activate='leaky_relu')
@@ -1731,7 +1731,7 @@ class Unet_liu_e_4(nn.Module):
         self.conv_3 = nn.Conv2d(in_channels=8 * dim, out_channels=8 * dim, kernel_size=3, stride=1, padding=1)
         self.steer_1 = steer1('steer1', 8 * dim, 8 * dim)
         self.residual_block_1_none_3 = ResidualBlock('9', 16 * dim, 8 * dim, activate='leaky_relu')
-        self.edge_2 = edge5_1('edge_2', 8 * dim,8 * dim, 6 * dim)  #浅 深 边
+        self.edge_2 = edge5_1('edge_2', 8 * dim,8 * dim, 6 * dim) 
 
         # 16x16
         self.residual_block_up_1 = ResidualBlockUp('10', 16 * dim, 8 * dim, activate='leaky_relu')
@@ -1745,21 +1745,20 @@ class Unet_liu_e_4(nn.Module):
         self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
         self.steer_3 = steer1('steer3',  6 * dim,2 * dim)# 浅 concat
         self.residual_block_none2 = ResidualBlock('13', 8 * dim, 4 * dim, activate='leaky_relu')
-        self.edge1 = edge5('edge1', 2 * dim, 4 * dim,4 * dim)  # 边缘的输入输出
+        self.edge1 = edge5('edge1', 2 * dim, 4 * dim,4 * dim)  
 
         # 64x64
         self.residual_block_up_3 = ResidualBlockUp('14', 6 * dim, 4 * dim, activate='leaky_relu')
         self.conv_6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
-        self.steer_4 = steer1('steer4',  4 * dim, 2* dim)# 浅 concat
+        self.steer_4 = steer1('steer4',  4 * dim, 2* dim)
         self.residual_block_none3 = ResidualBlock('15',6 * dim, 2 * dim, activate='leaky_relu')
-        self.edge2 = edge5('edge2', 2 * dim, 2 * dim, 2* dim)  # 边缘的输入输出
-
+        self.edge2 = edge5('edge2', 2 * dim, 2 * dim, 2* dim) 
         # 128x128
         self.residual_block_up_4 = ResidualBlockUp('16', 2 * dim, 2 * dim, activate='leaky_relu')  # 4 2
         self.conv_7 = nn.Conv2d(in_channels=1 * dim, out_channels=1 * dim, kernel_size=3, stride=1, padding=1)
-        self.steer_5 = steer1('steer5',  2*dim, dim)# 浅 concat
+        self.steer_5 = steer1('steer5',  2*dim, dim)
         self.residual_block_none4 = ResidualBlock('17', 3 * dim, 1 * dim, activate='leaky_relu')  # 2 1
-        self.edge3 = edge5('edge3', 1 * dim, dim, dim)  # 边缘的输入输出
+        self.edge3 = edge5('edge3', 1 * dim, dim, dim)  
         # 256x256
         # self.residual_block_none5 = ResidualBlock('18', 2* dim, 1 * dim, activate='leaky_relu')
         self.residual_block_none5 = ResidualBlock('18', 1 * dim, 1 * dim, activate='leaky_relu')  # 1 1
@@ -1788,7 +1787,7 @@ class Unet_liu_e_4(nn.Module):
         x2 = self.residual_block_down_1(x1)
         x3 = self.residual_block_down_2(x2)
 
-        # --------------------边缘-------------------------------------
+        # --------------------edge------------------------------------
         #dege0 = self.residual_block_2_down_2(x2)
         dege1 = self.residual_block_3_down_2(x3)  # 2
         dege2 = self.residual_block_4_down_2(dege1)
@@ -1873,7 +1872,7 @@ class Unet_liu_e_4_bc_1(nn.Module):
         self.activate = activate
 
         # 128x128
-        # --------------------------边缘----------------------------
+        # --------------------------edge----------------------------
         # self.residual_block_2_down_2 = non_symmetricBlock('Res0', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
         #                                                   down="ture")
         # self.residual_block_3_down_2 = non_symmetricBlock('Res1', 2 * dim, 1 * dim, 2 * dim, activate='leaky_relu',
@@ -1907,11 +1906,11 @@ class Unet_liu_e_4_bc_1(nn.Module):
         self.residual_block_down_2 = ResidualBlockDown('2', 2 * dim, 2 * dim, activate='leaky_relu')
         self.edge_1 = edge4_1('edge_1',2 * dim, 2* dim)
         self.residual_block_down_3 = ResidualBlockDown('3', 2 * dim, 2 * dim, activate='leaky_relu')
-        self.edge_2 = edge4_1('edge_2',4 * dim, 4* dim)  # 主 边
+        self.edge_2 = edge4_1('edge_2',4 * dim, 4* dim)  
         self.residual_block_none_3 = ResidualBlock('4',  2* dim, 4 * dim, activate='leaky_relu')
         # 32x32
         self.residual_block_down_4 = ResidualBlockDown('5', 4 * dim, 4 * dim, activate='leaky_relu')
-        self.edge_3 = edge4_1('edge_3',  6 * dim, 8 * dim)  # 主路特征，边缘特征的输入输出
+        self.edge_3 = edge4_1('edge_3',  6 * dim, 8 * dim)  
         self.residual_block_none_4 = ResidualBlock('6', 4 * dim, 8 * dim, activate='leaky_relu')
         # 16x16
         self.residual_block_1_none_1 = ResidualBlock('7', 8 * dim, 8 * dim, activate='leaky_relu')
@@ -1933,14 +1932,14 @@ class Unet_liu_e_4_bc_1(nn.Module):
         self.conv_5 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
         self.steer_3 = steer1('steer3',  6 * dim,2 * dim)# 浅 concat
         self.residual_block_none2 = ResidualBlock('13', 8 * dim, 4 * dim, activate='leaky_relu')
-        self.edge1 = edge5_3('edge1', 4 * dim, 4 * dim,2 * dim)  # 边缘的输入输出
+        self.edge1 = edge5_3('edge1', 4 * dim, 4 * dim,2 * dim)  
 
         # 64x64
         self.residual_block_up_3 = ResidualBlockUp('14', 6* dim, 4 * dim, activate='leaky_relu')
         self.conv_6 = nn.Conv2d(in_channels=2 * dim, out_channels=2 * dim, kernel_size=3, stride=1, padding=1)
         self.steer_4 = steer1('steer4',  4 * dim, 2* dim)# 浅 concat
         self.residual_block_none3 = ResidualBlock('15',6 * dim, 2 * dim, activate='leaky_relu')
-        self.edge2 = edge5_3('edge2', 2 * dim, 2 * dim,2 * dim)  # 边缘的输入输出
+        self.edge2 = edge5_3('edge2', 2 * dim, 2 * dim,2 * dim) 
 
         # 128x128
         self.residual_block_up_4 = ResidualBlockUp('16', 4 * dim, 2 * dim, activate='leaky_relu')  # 4 2
@@ -1976,7 +1975,7 @@ class Unet_liu_e_4_bc_1(nn.Module):
     def forward(self, x):
 
 
-        # --------------------边缘-------------------------------------
+        # --------------------edge-------------------------------------
         dege = self.conv_1_1(x)
         dege = self.bn1_1(dege)
         dege = self.leaky_relu(dege)
